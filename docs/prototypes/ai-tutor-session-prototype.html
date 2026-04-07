@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Tutor Session Prototype</title>
+  <style>
+    :root {
+      --bg: #f4efe4;
+      --paper: rgba(255, 252, 245, 0.9);
+      --paper-strong: #fffaf0;
+      --ink: #1f2933;
+      --muted: #5f6c78;
+      --line: rgba(42, 59, 74, 0.14);
+      --brand: #0f766e;
+      --brand-soft: rgba(15, 118, 110, 0.12);
+      --accent: #d97706;
+      --accent-soft: rgba(217, 119, 6, 0.14);
+      --rose: #b45309;
+      --shadow: 0 18px 40px rgba(78, 63, 38, 0.12);
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(15, 118, 110, 0.18), transparent 30%),
+        radial-gradient(circle at top right, rgba(217, 119, 6, 0.18), transparent 24%),
+        linear-gradient(180deg, #f8f2e7 0%, #f1ebdf 48%, #ece5d8 100%);
+      font-family: "Avenir Next", "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      z-index: 0;
+      inset: auto;
+      width: 28rem;
+      height: 28rem;
+      border-radius: 999px;
+      filter: blur(10px);
+      pointer-events: none;
+    }
+
+    body::before {
+      top: -9rem;
+      right: -8rem;
+      background: rgba(15, 118, 110, 0.08);
+    }
+
+    body::after {
+      bottom: -10rem;
+      left: -7rem;
+      background: rgba(180, 83, 9, 0.08);
+    }
+
+    .shell {
+      position: relative;
+      z-index: 1;
+      max-width: 1580px;
+      margin: 0 auto;
+      padding: 28px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 24px;
+      padding: 18px 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: rgba(255, 249, 240, 0.72);
+      backdrop-filter: blur(14px);
+      box-shadow: var(--shadow);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-mark {
+      width: 50px;
+      height: 50px;
+      display: grid;
+      place-items: center;
+      border-radius: 18px;
+      color: #fff;
+      font-weight: 700;
+      background: linear-gradient(145deg, #0f766e, #115e59);
+      box-shadow: 0 12px 24px rgba(15, 118, 110, 0.24);
+    }
+
+    .brand-title {
+      margin: 0;
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+
+    .brand-subtitle {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .session-meta {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    .chip {
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.68);
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr) 320px;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .panel,
+    .stream,
+    .composer {
+      border: 1px solid var(--line);
+      background: var(--paper);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--shadow);
+    }
+
+    .panel {
+      border-radius: var(--radius-xl);
+      padding: 18px;
+    }
+
+    .panel h2,
+    .panel h3,
+    .stream h2 {
+      margin: 0;
+    }
+
+    .section-label {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.75rem;
+      margin-bottom: 12px;
+    }
+
+    .plan-card {
+      padding: 16px;
+      border-radius: var(--radius-lg);
+      background: linear-gradient(180deg, rgba(15, 118, 110, 0.1), rgba(15, 118, 110, 0.03));
+      border: 1px solid rgba(15, 118, 110, 0.16);
+      margin-bottom: 16px;
+    }
+
+    .plan-card h3 {
+      font-size: 1.1rem;
+      margin-bottom: 8px;
+    }
+
+    .plan-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 12px;
+    }
+
+    .timeline-item {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 12px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.6);
+    }
+
+    .timeline-dot {
+      width: 34px;
+      height: 34px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: #0f172a;
+      background: linear-gradient(180deg, #f7d9a2, #efbd65);
+    }
+
+    .timeline-item.active .timeline-dot {
+      color: #fff;
+      background: linear-gradient(180deg, #0f766e, #115e59);
+    }
+
+    .timeline-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .timeline-desc {
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.5;
+    }
+
+    .stream-wrap {
+      display: grid;
+      gap: 18px;
+    }
+
+    .stream {
+      border-radius: 34px;
+      overflow: hidden;
+    }
+
+    .stream-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 20px 24px 16px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 248, 235, 0.92), rgba(255, 250, 242, 0.72));
+    }
+
+    .stream-title {
+      font-size: 1.2rem;
+      font-weight: 700;
+    }
+
+    .stream-subtitle {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .progress {
+      min-width: 220px;
+    }
+
+    .progress-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 10px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: rgba(17, 24, 39, 0.08);
+    }
+
+    .progress-fill {
+      width: 42%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #0f766e, #14b8a6);
+    }
+
+    .messages {
+      display: grid;
+      gap: 14px;
+      padding: 22px;
+      background-image:
+        linear-gradient(rgba(72, 98, 128, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(72, 98, 128, 0.04) 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+
+    .message {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 14px;
+      animation: float-in 0.45s ease both;
+    }
+
+    .avatar {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      font-weight: 700;
+      color: #fff;
+      background: linear-gradient(145deg, #0f766e, #115e59);
+      box-shadow: 0 10px 18px rgba(15, 118, 110, 0.18);
+    }
+
+    .avatar.user {
+      background: linear-gradient(145deg, #9a3412, #b45309);
+      box-shadow: 0 10px 18px rgba(180, 83, 9, 0.18);
+    }
+
+    .bubble {
+      padding: 18px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .bubble.ai {
+      border-top-left-radius: 10px;
+    }
+
+    .bubble.user {
+      border-top-left-radius: 22px;
+      border-top-right-radius: 10px;
+      background: rgba(255, 247, 236, 0.94);
+    }
+
+    .speaker {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .speaker-name {
+      font-weight: 700;
+      font-size: 0.95rem;
+    }
+
+    .speaker-time {
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .ai-copy {
+      margin: 0;
+      line-height: 1.75;
+      font-size: 1rem;
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    }
+
+    .visual-card,
+    .quiz-card,
+    .analysis-card {
+      margin-top: 14px;
+      border-radius: 20px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background: var(--paper-strong);
+    }
+
+    .visual-head,
+    .quiz-head,
+    .analysis-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(15, 118, 110, 0.06);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .visual-title,
+    .quiz-title,
+    .analysis-title {
+      font-weight: 700;
+    }
+
+    .visual-body,
+    .quiz-body,
+    .analysis-body {
+      padding: 16px;
+    }
+
+    .visual-body svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .knowledge-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .knowledge-card {
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(15, 118, 110, 0.06);
+      border: 1px solid rgba(15, 118, 110, 0.14);
+      font-size: 0.92rem;
+      line-height: 1.55;
+    }
+
+    .options {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .option {
+      display: flex;
+      gap: 12px;
+      align-items: start;
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--line);
+    }
+
+    .option-mark {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: rgba(15, 118, 110, 0.1);
+      color: var(--brand);
+      font-weight: 700;
+      flex: 0 0 auto;
+    }
+
+    .option.active {
+      border-color: rgba(15, 118, 110, 0.35);
+      background: rgba(15, 118, 110, 0.08);
+    }
+
+    .analysis-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .metric {
+      padding: 14px;
+      border-radius: 16px;
+      background: rgba(217, 119, 6, 0.07);
+      border: 1px solid rgba(217, 119, 6, 0.18);
+    }
+
+    .metric-value {
+      font-size: 1.2rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .hint-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .hint-pill {
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(15, 118, 110, 0.18);
+      background: rgba(15, 118, 110, 0.06);
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+
+    .side-stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .mini-stat {
+      display: grid;
+      gap: 10px;
+    }
+
+    .mini-stat-card {
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.66);
+    }
+
+    .mini-stat-label {
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-bottom: 8px;
+    }
+
+    .mini-stat-value {
+      font-size: 1.25rem;
+      font-weight: 700;
+    }
+
+    .note-sheet {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px dashed rgba(31, 41, 51, 0.16);
+      background: linear-gradient(180deg, rgba(255, 252, 246, 0.96), rgba(255, 247, 233, 0.92));
+      min-height: 180px;
+      line-height: 1.8;
+      color: #364152;
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    }
+
+    .resource-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .resource-item {
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid var(--line);
+    }
+
+    .resource-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .resource-desc {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    .composer {
+      border-radius: 26px;
+      padding: 14px 16px 16px;
+    }
+
+    .composer-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .composer-status {
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .composer-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .ghost-btn,
+    .primary-btn {
+      border: 0;
+      border-radius: 999px;
+      padding: 10px 14px;
+      font: inherit;
+    }
+
+    .ghost-btn {
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.68);
+      border: 1px solid var(--line);
+    }
+
+    .primary-btn {
+      color: #fff;
+      background: linear-gradient(135deg, #0f766e, #14b8a6);
+      box-shadow: 0 10px 20px rgba(15, 118, 110, 0.18);
+    }
+
+    .input-shell {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: end;
+      padding: 12px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.78);
+    }
+
+    .input-fake {
+      min-height: 56px;
+      color: var(--muted);
+      padding: 8px 10px;
+      line-height: 1.6;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .tag {
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(15, 118, 110, 0.08);
+      border: 1px solid rgba(15, 118, 110, 0.14);
+      color: #20524d;
+      font-size: 0.84rem;
+    }
+
+    @keyframes float-in {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 1220px) {
+      .layout {
+        grid-template-columns: 280px minmax(0, 1fr);
+      }
+
+      .layout > .panel:last-child {
+        grid-column: 1 / -1;
+      }
+    }
+
+    @media (max-width: 900px) {
+      .shell {
+        padding: 16px;
+      }
+
+      .topbar,
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar {
+        display: grid;
+      }
+
+      .session-meta {
+        justify-content: flex-start;
+      }
+
+      .knowledge-grid,
+      .analysis-metrics {
+        grid-template-columns: 1fr;
+      }
+
+      .input-shell {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">AI</div>
+        <div>
+          <h1 class="brand-title">Lobster Tutor · 连续上课原型</h1>
+          <p class="brand-subtitle">学生醒来后，AI 先安排今天的计划，然后直接带着上课、做题、纠错、推进下一任务。</p>
+        </div>
+      </div>
+      <div class="session-meta">
+        <div class="chip">课程 92 · 2026四类综合</div>
+        <div class="chip">今日任务 2 / 5</div>
+        <div class="chip">预计 43 分钟</div>
+      </div>
+    </header>
+
+    <section class="layout">
+      <aside class="panel">
+        <div class="section-label">Today</div>
+        <div class="plan-card">
+          <h3>早安，今天我们把“洋流与季风”学明白。</h3>
+          <p>先用 8 分钟听懂核心关系，再做 3 道练习题。我会根据你的错误点自动调整后半程讲解。</p>
+        </div>
+
+        <div class="section-label">Session Plan</div>
+        <div class="timeline">
+          <div class="timeline-item active">
+            <div class="timeline-dot">1</div>
+            <div>
+              <div class="timeline-title">知识点引入</div>
+              <div class="timeline-desc">讲解季风、洋流、热量交换之间的关系，并用动态图示说明。</div>
+            </div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-dot">2</div>
+            <div>
+              <div class="timeline-title">即时提问</div>
+              <div class="timeline-desc">你可以随时打断，让我换例子、换图、再讲一遍。</div>
+            </div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-dot">3</div>
+            <div>
+              <div class="timeline-title">小测练习</div>
+              <div class="timeline-desc">做 3 道题，自动分析易错点与薄弱知识。</div>
+            </div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-dot">4</div>
+            <div>
+              <div class="timeline-title">针对性补讲</div>
+              <div class="timeline-desc">如果你错在“风向成因”，我会改讲因果链，不再重复定义。</div>
+            </div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-dot">5</div>
+            <div>
+              <div class="timeline-title">进入下一个任务</div>
+              <div class="timeline-desc">自动切到今日下一段视频或题组，不让你手动跳页面。</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <div class="stream-wrap">
+        <section class="stream">
+          <div class="stream-header">
+            <div>
+              <div class="stream-title">当前正在上课</div>
+              <div class="stream-subtitle">主界面不是仪表盘，而是一条连续的课堂对话流。</div>
+            </div>
+            <div class="progress">
+              <div class="progress-row">
+                <span>今日学习进度</span>
+                <span>42%</span>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="messages">
+            <article class="message">
+              <div class="avatar">AI</div>
+              <div class="bubble ai">
+                <div class="speaker">
+                  <span class="speaker-name">Lobster Tutor</span>
+                  <span class="speaker-time">07:40</span>
+                </div>
+                <p class="ai-copy">早安。今天我已经把计划拆好了：先学“洋流如何影响季风”，再用 3 道题确认你能不能把因果链说清楚。你现在不需要翻课程页，我们直接开始。</p>
+              </div>
+            </article>
+
+            <article class="message">
+              <div class="avatar">AI</div>
+              <div class="bubble ai">
+                <div class="speaker">
+                  <span class="speaker-name">Lobster Tutor</span>
+                  <span class="speaker-time">07:41</span>
+                </div>
+                <p class="ai-copy">先抓住一句话：洋流改变海面温度，海面温度改变气压差，气压差再推动季风强弱变化。下面这张图只讲这条链路。</p>
+
+                <section class="visual-card">
+                  <div class="visual-head">
+                    <div class="visual-title">生成式讲解图 · 洋流影响季风</div>
+                    <div class="chip">流式图示位</div>
+                  </div>
+                  <div class="visual-body">
+                    <svg viewBox="0 0 860 360" role="img" aria-label="洋流与季风关系图">
+                      <defs>
+                        <linearGradient id="warm" x1="0" x2="1">
+                          <stop offset="0%" stop-color="#f6c56a" />
+                          <stop offset="100%" stop-color="#d97706" />
+                        </linearGradient>
+                        <linearGradient id="cool" x1="0" x2="1">
+                          <stop offset="0%" stop-color="#2dd4bf" />
+                          <stop offset="100%" stop-color="#0f766e" />
+                        </linearGradient>
+                      </defs>
+                      <rect x="20" y="34" width="230" height="112" rx="24" fill="#fff8eb" stroke="#dfcfb0"/>
+                      <rect x="316" y="34" width="230" height="112" rx="24" fill="#f0fbf8" stroke="#b9ddd6"/>
+                      <rect x="610" y="34" width="230" height="112" rx="24" fill="#fff8eb" stroke="#dfcfb0"/>
+                      <text x="52" y="82" font-size="22" font-family="Avenir Next, sans-serif" fill="#6b4112">暖流 / 寒流变化</text>
+                      <text x="348" y="82" font-size="22" font-family="Avenir Next, sans-serif" fill="#0f766e">海面温度改变</text>
+                      <text x="643" y="82" font-size="22" font-family="Avenir Next, sans-serif" fill="#6b4112">气压差变化</text>
+                      <text x="66" y="114" font-size="16" font-family="Georgia, serif" fill="#6b7280">热量输送方向不同</text>
+                      <text x="352" y="114" font-size="16" font-family="Georgia, serif" fill="#6b7280">沿岸增温或降温</text>
+                      <text x="651" y="114" font-size="16" font-family="Georgia, serif" fill="#6b7280">陆海风力差异放大</text>
+                      <path d="M248 90 C276 90, 294 90, 316 90" stroke="url(#warm)" stroke-width="10" fill="none" stroke-linecap="round"/>
+                      <path d="M546 90 C574 90, 592 90, 614 90" stroke="url(#cool)" stroke-width="10" fill="none" stroke-linecap="round"/>
+                      <rect x="116" y="214" width="628" height="102" rx="26" fill="#ffffff" stroke="#d8d6cd"/>
+                      <text x="154" y="258" font-size="28" font-family="Avenir Next, sans-serif" fill="#1f2933">季风强弱 = 热量差异 + 气压差 + 风向响应</text>
+                      <text x="154" y="292" font-size="17" font-family="Georgia, serif" fill="#5f6c78">当沿岸海域被暖流加热，海陆热力差会被重新分配，季风就可能提前、增强，或转向更明显。</text>
+                    </svg>
+
+                    <div class="knowledge-grid">
+                      <div class="knowledge-card">知识点 1：洋流不是直接“吹风”，而是先改变海温。</div>
+                      <div class="knowledge-card">知识点 2：海温差异会重塑近海气压分布。</div>
+                      <div class="knowledge-card">知识点 3：季风本质上是大范围气压差驱动的风系响应。</div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </article>
+
+            <article class="message">
+              <div class="avatar user">你</div>
+              <div class="bubble user">
+                <div class="speaker">
+                  <span class="speaker-name">学生提问</span>
+                  <span class="speaker-time">07:43</span>
+                </div>
+                <p class="ai-copy">如果海水变暖了，为什么就一定会影响风？我感觉中间断了一步。</p>
+              </div>
+            </article>
+
+            <article class="message">
+              <div class="avatar">AI</div>
+              <div class="bubble ai">
+                <div class="speaker">
+                  <span class="speaker-name">Lobster Tutor</span>
+                  <span class="speaker-time">07:43</span>
+                </div>
+                <p class="ai-copy">你卡住的是“海温变暖如何变成风”。很好，这正是常见薄弱点。我换成更短的链路：海面更暖 → 上方空气更容易上升 → 近地面形成低压倾向 → 周围空气流进来，于是风向和风力都受影响。</p>
+
+                <div class="hint-strip">
+                  <div class="hint-pill">AI 正在讲第二层因果，不重复定义</div>
+                  <div class="hint-pill">这里可以继续问“低压为什么形成”</div>
+                  <div class="hint-pill">也可以切成生活例子模式</div>
+                </div>
+              </div>
+            </article>
+
+            <article class="message">
+              <div class="avatar">AI</div>
+              <div class="bubble ai">
+                <div class="speaker">
+                  <span class="speaker-name">Lobster Tutor</span>
+                  <span class="speaker-time">07:48</span>
+                </div>
+                <p class="ai-copy">现在先做 1 道题，我想确认你是不是已经把这个因果链接上了。</p>
+
+                <section class="quiz-card">
+                  <div class="quiz-head">
+                    <div class="quiz-title">即时检测 · 第 1 题</div>
+                    <div class="chip">做题区示意</div>
+                  </div>
+                  <div class="quiz-body">
+                    <p class="ai-copy">某沿岸海域受暖流影响，海面温度升高。下列最可能首先发生的变化是：</p>
+                    <div class="options">
+                      <div class="option active">
+                        <div class="option-mark">A</div>
+                        <div>近海上空空气上升增强，近地面低压倾向更明显</div>
+                      </div>
+                      <div class="option">
+                        <div class="option-mark">B</div>
+                        <div>高空冷空气直接下沉，因此季风立刻减弱</div>
+                      </div>
+                      <div class="option">
+                        <div class="option-mark">C</div>
+                        <div>洋流立刻改变大陆地形，导致风向改变</div>
+                      </div>
+                      <div class="option">
+                        <div class="option-mark">D</div>
+                        <div>海水盐度先降低，再直接形成台风</div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </article>
+
+            <article class="message">
+              <div class="avatar">AI</div>
+              <div class="bubble ai">
+                <div class="speaker">
+                  <span class="speaker-name">Lobster Tutor</span>
+                  <span class="speaker-time">07:51</span>
+                </div>
+                <p class="ai-copy">你答对了，但我观察到你提问时仍然对“低压形成”不够稳。我会把今天后半段的讲解略微调整成“温度变化 → 气流升降 → 气压差”这个顺序，再带你做下一题。</p>
+
+                <section class="analysis-card">
+                  <div class="analysis-head">
+                    <div class="analysis-title">AI 课堂分析</div>
+                    <div class="chip">自动调整下一步</div>
+                  </div>
+                  <div class="analysis-body">
+                    <p class="ai-copy">这不是成绩报告，而是下一步教学决策。系统会用你的提问、答题和停顿点判断今天该讲什么、不该讲什么。</p>
+                    <div class="analysis-metrics">
+                      <div class="metric">
+                        <div class="metric-value">78%</div>
+                        <div class="metric-label">当前理解度</div>
+                      </div>
+                      <div class="metric">
+                        <div class="metric-value">因果链</div>
+                        <div class="metric-label">主要薄弱点</div>
+                      </div>
+                      <div class="metric">
+                        <div class="metric-value">+1 题</div>
+                        <div class="metric-label">建议补练数量</div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="composer">
+          <div class="composer-top">
+            <div class="composer-status">静态样品页：这里只展示“聊天主舞台 + 课堂组件插入流”的最终形态。</div>
+            <div class="composer-actions">
+              <button class="ghost-btn" type="button">再举个例子</button>
+              <button class="ghost-btn" type="button">切到做题模式</button>
+              <button class="ghost-btn" type="button">打开黑板</button>
+            </div>
+          </div>
+          <div class="input-shell">
+            <div>
+              <div class="input-fake">我可以问：为什么海温变化会变成低压？或者说，先别讲下一题，给我一个生活化的比喻。</div>
+              <div class="tag-row">
+                <div class="tag">随时打断老师</div>
+                <div class="tag">要求换图讲解</div>
+                <div class="tag">让 AI 直接开始下一任务</div>
+              </div>
+            </div>
+            <button class="primary-btn" type="button">发送提问</button>
+          </div>
+        </section>
+      </div>
+
+      <aside class="panel">
+        <div class="side-stack">
+          <section>
+            <div class="section-label">Live Session</div>
+            <div class="mini-stat">
+              <div class="mini-stat-card">
+                <div class="mini-stat-label">当前模式</div>
+                <div class="mini-stat-value">讲解 + 练习</div>
+              </div>
+              <div class="mini-stat-card">
+                <div class="mini-stat-label">本段目标</div>
+                <div class="mini-stat-value">把因果链讲顺</div>
+              </div>
+              <div class="mini-stat-card">
+                <div class="mini-stat-label">下一步</div>
+                <div class="mini-stat-value">补 1 题再推进</div>
+              </div>
+            </div>
+          </section>
+
+          <section>
+            <div class="section-label">课堂笔记</div>
+            <div class="note-sheet">
+              1. 洋流先改海温，不是直接改变风。<br>
+              2. 海温升高，空气更容易上升。<br>
+              3. 上升运动会让近地面形成低压倾向。<br>
+              4. 低压吸引周边空气流入，风场随之变化。<br><br>
+              这块更像“AI 自动黑板”，不是独立文档页。
+            </div>
+          </section>
+
+          <section>
+            <div class="section-label">相关材料</div>
+            <div class="resource-list">
+              <div class="resource-item">
+                <div class="resource-title">课程视频 03 · 洋流与气候</div>
+                <div class="resource-desc">如果学生持续卡住，可自动切回这段视频的 02:10 - 04:00。</div>
+              </div>
+              <div class="resource-item">
+                <div class="resource-title">错题组 · 季风形成题型</div>
+                <div class="resource-desc">后续可自动生成一组同主题练习，强化“因果链”表述。</div>
+              </div>
+              <div class="resource-item">
+                <div class="resource-title">今日计划同步</div>
+                <div class="resource-desc">完成这段学习后，再把下一个任务压到今天的时间轴里。</div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </section>
+  </main>
+</body>
+</html>

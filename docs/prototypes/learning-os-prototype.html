@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Learning OS Prototype</title>
+  <style>
+    :root {
+      --bg: #f3eee3;
+      --paper: rgba(255, 252, 246, 0.92);
+      --ink: #1d211c;
+      --muted: #6a7068;
+      --line: rgba(29, 33, 28, 0.12);
+      --accent: #1d6b52;
+      --accent-soft: rgba(29, 107, 82, 0.12);
+      --warn: #b05e28;
+      --shadow: 0 18px 50px rgba(42, 45, 36, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(29, 107, 82, 0.12), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(176, 94, 40, 0.10), transparent 28%),
+        linear-gradient(180deg, #f8f3ea 0%, var(--bg) 100%);
+    }
+
+    .shell {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: flex-start;
+      margin-bottom: 24px;
+    }
+
+    .hero h1 {
+      margin: 0 0 10px;
+      font-size: clamp(2rem, 4vw, 3.2rem);
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+    }
+
+    .hero p {
+      max-width: 760px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.02rem;
+      line-height: 1.6;
+    }
+
+    .hero-card {
+      min-width: 300px;
+      padding: 18px 20px;
+      border-radius: 22px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 0.94rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .hero-card ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr 1.2fr;
+      gap: 18px;
+    }
+
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+      min-height: 720px;
+    }
+
+    .panel h2 {
+      margin: 0;
+      font-size: 1.35rem;
+      letter-spacing: -0.03em;
+    }
+
+    .sub {
+      margin: 8px 0 20px;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 0.96rem;
+    }
+
+    .section {
+      margin-top: 18px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .note {
+      margin-top: 12px;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 0.95rem;
+    }
+
+    .timetable {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .slot {
+      display: grid;
+      grid-template-columns: 94px 1fr;
+      gap: 12px;
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.55);
+    }
+
+    .slot-time {
+      font-weight: 700;
+      font-size: 0.94rem;
+      color: var(--ink);
+    }
+
+    .slot-title {
+      margin: 0 0 6px;
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .slot-meta {
+      color: var(--muted);
+      font-size: 0.93rem;
+      line-height: 1.5;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .pill {
+      padding: 5px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .today-card,
+    .session-card {
+      padding: 16px;
+      border-radius: 20px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.58);
+      margin-top: 14px;
+    }
+
+    .today-card h3,
+    .session-card h3 {
+      margin: 0 0 8px;
+      font-size: 1.04rem;
+      letter-spacing: -0.02em;
+    }
+
+    .today-card p,
+    .session-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 0.95rem;
+    }
+
+    .checklist {
+      margin: 14px 0 0;
+      padding-left: 18px;
+      line-height: 1.8;
+      color: var(--ink);
+    }
+
+    .checklist li span {
+      color: var(--muted);
+    }
+
+    .chat {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .bubble {
+      padding: 14px 16px;
+      border-radius: 18px;
+      line-height: 1.65;
+      font-size: 0.96rem;
+      border: 1px solid var(--line);
+    }
+
+    .bubble.ai {
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .bubble.user {
+      margin-left: 42px;
+      background: rgba(29, 107, 82, 0.08);
+    }
+
+    .widget {
+      margin-top: 10px;
+      padding: 14px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, rgba(29, 107, 82, 0.10), rgba(29, 107, 82, 0.03));
+      border: 1px dashed rgba(29, 107, 82, 0.35);
+    }
+
+    .widget strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 0.95rem;
+      color: var(--accent);
+    }
+
+    .widget-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .mini {
+      padding: 10px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+    }
+
+    .decision {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .decision div {
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--line);
+      line-height: 1.55;
+      font-size: 0.92rem;
+    }
+
+    .warn {
+      color: var(--warn);
+      font-weight: 700;
+    }
+
+    @media (max-width: 1200px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .panel {
+        min-height: auto;
+      }
+
+      .hero {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <h1>AI Learning OS</h1>
+        <p>这不是一个单纯聊天框，也不是 Moodle 换皮。它是一个“课表驱动 + AI 补丁 + 单节课执行页”的学习系统。左边定稳定骨架，中间给出今天要完成的真实任务，右边只推进当前这一节课。</p>
+      </div>
+      <div class="hero-card">
+        <strong>这版样板要表达什么</strong>
+        <ul>
+          <li>课表不是 AI 每天重写，而是稳定模板</li>
+          <li>AI 负责在模板上打补丁，不负责胡乱排课</li>
+          <li>上课页一次只做一件事，避免学生在系统里乱逛</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="layout">
+      <section class="panel">
+        <h2>课表页 Timetable</h2>
+        <p class="sub">稳定骨架。它定义今天有哪些课、哪些是主课、哪些是自习。AI 只允许在槽位里替换具体内容，不应该每天重排整天。</p>
+        <div class="label">固定结构</div>
+
+        <div class="timetable">
+          <article class="slot">
+            <div class="slot-time">08:00</div>
+            <div>
+              <div class="slot-title">数学主课</div>
+              <div class="slot-meta">course 26 / 2026单招数学课-任老师。默认放最难的新知识点。</div>
+              <div class="pill-row">
+                <span class="pill">可被 AI 填充 unit</span>
+                <span class="pill">不可删掉</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="slot">
+            <div class="slot-time">09:00</div>
+            <div>
+              <div class="slot-title">数学练习</div>
+              <div class="slot-meta">默认跟随上一节主课，优先做同单元课后测试。</div>
+              <div class="pill-row">
+                <span class="pill">允许 AI 改成补弱</span>
+                <span class="pill">不可变成其他学科</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="slot">
+            <div class="slot-time">14:00</div>
+            <div>
+              <div class="slot-title">综合推进</div>
+              <div class="slot-meta">course 92 / 2026四类综合。中等强度的新内容推进。</div>
+              <div class="pill-row">
+                <span class="pill">综合课</span>
+                <span class="pill">固定时段</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="slot">
+            <div class="slot-time">19:00</div>
+            <div>
+              <div class="slot-title">晚自习补弱</div>
+              <div class="slot-meta">保留给 AI 动态指派，不固定课程，但必须服务当天薄弱点。</div>
+              <div class="pill-row">
+                <span class="pill">自习课</span>
+                <span class="pill">可替换内容</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="slot">
+            <div class="slot-time">20:00</div>
+            <div>
+              <div class="slot-title">收尾总结</div>
+              <div class="slot-meta">生成总结、同步日历、决定明天是否减载或补弱。</div>
+              <div class="pill-row">
+                <span class="pill">固定存在</span>
+                <span class="pill">不可删除</span>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="section">
+          <div class="label">AI 不能随便改的</div>
+          <p class="note">主课数量、自习时段、每日总负载、整天大致顺序都应由系统或老师先定好。AI 只在这些槽位里做选择和重排。</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>今日页 Today</h2>
+        <p class="sub">AI 在固定课表上生成今天的补丁。它回答“今天到底学什么、为什么这样排、要不要临时补弱”。</p>
+        <div class="label">AI 生成补丁</div>
+
+        <div class="today-card">
+          <h3>今日主目标</h3>
+          <p>完成数学“函数的概念”入门，做完对应课后测试；综合课推进一节政治思想内容；晚自习优先处理今天暴露出来的数学薄弱点。</p>
+        </div>
+
+        <div class="today-card">
+          <h3>今日补丁摘要</h3>
+          <p>昨晚分支状态显示“函数、二次不等式”弱，所以今天没有安排新的数学大章节，而是把上午主课锁定为 `course 26` 的函数起步单元，并把晚自习改成函数错题复盘。</p>
+        </div>
+
+        <div class="today-card">
+          <h3>今天的 5 步</h3>
+          <ol class="checklist">
+            <li>08:00 数学主课：<span>视频课 + AI 导学，目标是建立函数基本定义。</span></li>
+            <li>09:00 数学练习：<span>课后测试，若正确率低于 60%，今天不进入下一节。</span></li>
+            <li>14:00 综合推进：<span>course 92 当前单元，保持中等强度。</span></li>
+            <li>19:00 自习补弱：<span>重做早上数学错题，AI 用生活化例子重讲。</span></li>
+            <li>20:00 收尾：<span>写日历、生成总结、准备明天预习。</span></li>
+          </ol>
+        </div>
+
+        <div class="today-card">
+          <h3>今日页应该允许的动作</h3>
+          <div class="pill-row">
+            <span class="pill">接受今日计划</span>
+            <span class="pill">只重排一个时段</span>
+            <span class="pill">今天减负</span>
+            <span class="pill">跳过并说明原因</span>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="label">学生分支</div>
+          <p class="note">这里背后维护的是学生分支，而不是一份每天重写的长文本计划。分支里记录掌握度、当前单元、错因和节奏。Today 页只是把今天这次 patch 可视化给学生看。</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>上课页 Session</h2>
+        <p class="sub">执行面。一节课只做一件事。这里仍然是 chat-first，但聊天流里会穿插视频卡、题目卡、分析卡和下一步决策。</p>
+        <div class="label">单任务执行</div>
+
+        <div class="chat">
+          <div class="bubble ai">
+            这节课我们先学 <strong>函数的概念</strong>。目标不是看完视频，而是你能判断一个关系是不是函数，并说出“定义域、对应法则、值域”这三个关键词。
+            <div class="widget">
+              <strong>视频导学卡</strong>
+              <div class="widget-grid">
+                <div class="mini">课程：2026单招数学课-任老师</div>
+                <div class="mini">单元：函数的概念</div>
+                <div class="mini">预计：18 分钟导学 + 12 分钟练习</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="bubble user">
+            我上次总是分不清“关系”和“函数”的区别。
+          </div>
+
+          <div class="bubble ai">
+            好，我们先不急着放视频，先用一句人话版来建立直觉：<strong>函数是一种“每个输入都只能对应一个输出”的关系</strong>。你先记住“一个输入不能跑出两个答案”。
+            <div class="widget">
+              <strong>课堂检查题</strong>
+              <div class="widget-grid">
+                <div class="mini">A. 一个人对应一个身份证号</div>
+                <div class="mini">B. 一个学生对应多个兴趣爱好</div>
+                <div class="mini">目标：先用生活例子判断是否函数</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="bubble ai">
+            你如果判断错，我不会直接推进下一节，而是会在今天晚自习自动补一个“函数错因复盘”。这就是今天这套系统和普通聊天的区别。
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="label">当前节课结束后系统要做的决定</div>
+          <div class="decision">
+            <div><strong>完成条件</strong>：课后测试正确率达到 80% 以上，或至少完成 AI 指定的核心题组。</div>
+            <div><strong>若表现一般</strong>：<span class="warn">不解锁下一节</span>，把晚自习改成函数补弱。</div>
+            <div><strong>若表现很好</strong>：允许明天继续 `函数三要素`，并把晚自习改成综合课复盘。</div>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

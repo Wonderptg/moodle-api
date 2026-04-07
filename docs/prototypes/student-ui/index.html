@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lobster Tutor Student UI Prototype</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">AI</div>
+        <div>
+          <h1 class="brand-title">Lobster Tutor · Student Session UI</h1>
+          <p class="brand-subtitle">OpenClaw 作为内核，前端专门服务“AI 连续上课”这一条主流程。</p>
+        </div>
+      </div>
+      <div class="session-meta" id="session-meta"></div>
+    </header>
+
+    <section class="layout">
+      <aside class="panel rail-left">
+        <section>
+          <div class="section-label">Today</div>
+          <div class="hero-card" id="today-hero"></div>
+        </section>
+
+        <section>
+          <div class="section-label">Lesson Plan</div>
+          <div class="timeline" id="plan-timeline"></div>
+        </section>
+
+        <section>
+          <div class="section-label">Runtime Layers</div>
+          <div class="stack-cards">
+            <div class="stack-card">
+              <div class="stack-title">Student UI</div>
+              <div class="stack-copy">连续课堂界面、课堂块渲染、学生交互。</div>
+            </div>
+            <div class="stack-card">
+              <div class="stack-title">Lesson Adapter</div>
+              <div class="stack-copy">把 OpenClaw 的输出整理成 `plan / concept / quiz / analysis / transition`。</div>
+            </div>
+            <div class="stack-card">
+              <div class="stack-title">OpenClaw Core</div>
+              <div class="stack-copy">session、skills、tool routing、streaming、auth、gateway。</div>
+            </div>
+            <div class="stack-card">
+              <div class="stack-title">Moodle Adapter</div>
+              <div class="stack-copy">`moodle_cli.py`、`local_aiagentapi`、课程与作答能力。</div>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <div class="center-column">
+        <section class="stream">
+          <div class="stream-header">
+            <div>
+              <div class="stream-title" id="stream-title"></div>
+              <div class="stream-subtitle" id="stream-subtitle"></div>
+            </div>
+            <div class="progress">
+              <div class="progress-row">
+                <span>今日学习进度</span>
+                <span id="progress-label"></span>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+              </div>
+            </div>
+          </div>
+          <div class="messages" id="lesson-stream"></div>
+        </section>
+
+        <section class="composer">
+          <div class="composer-top">
+            <div class="composer-status" id="composer-status"></div>
+            <div class="composer-actions" id="composer-actions"></div>
+          </div>
+          <div class="input-shell">
+            <div>
+              <div class="input-fake" id="composer-placeholder"></div>
+              <div class="tag-row" id="composer-tags"></div>
+            </div>
+            <button class="primary-btn" type="button">发送提问</button>
+          </div>
+        </section>
+      </div>
+
+      <aside class="panel rail-right">
+        <section>
+          <div class="section-label">OpenClaw Adapter</div>
+          <div class="mini-stat" id="runtime-status"></div>
+        </section>
+
+        <section>
+          <div class="section-label">Auto Blackboard</div>
+          <div class="note-sheet" id="auto-notes"></div>
+        </section>
+
+        <section>
+          <div class="section-label">Related Material</div>
+          <div class="resource-list" id="resource-list"></div>
+        </section>
+      </aside>
+    </section>
+  </main>
+
+  <script src="./lesson-data.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
