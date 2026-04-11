@@ -36,6 +36,55 @@ Think of production as four independent parts:
 3. `moodledata`
 4. secrets and server config
 
+## Final architecture for this project
+
+For the current phase of this project, the recommended production architecture is:
+
+- Huawei Cloud server runs:
+  - Moodle site
+  - `public/local/aiagentapi`
+  - custom Moodle plugins
+  - database
+  - `moodledata`
+  - webservice tokens and external service registration
+
+- Your local machine runs:
+  - OpenClaw
+  - the model runtime
+  - `scripts/moodle_cli.py`
+  - any frontend or agent UI
+
+That means:
+
+- the server is just a clean Moodle website plus server-side AI-friendly API functions
+- the agent stays off-server
+- the CLI talks to the server remotely through Moodle web services
+
+This is the preferred first production model because it is simpler and safer:
+
+- server responsibilities stay small
+- model/provider changes do not require redeploying the website
+- agent experiments stay on your machine
+- production Moodle remains closer to a normal web application
+
+## What gets updated on the server
+
+When you say "update the server", for this architecture it means:
+
+- update Moodle code
+- update `public/local/aiagentapi`
+- update custom Moodle plugins
+- run Moodle upgrade
+- re-register external service functions if needed
+
+It does **not** mean:
+
+- updating OpenClaw on the server
+- updating model provider config on the server
+- deploying Codex CLI or local model tooling to the server
+
+Those stay on your local machine unless you later decide to host the agent separately.
+
 ## Recommended production topology
 
 Use one Huawei Cloud ECS instance with this layout:
@@ -116,6 +165,44 @@ sudo mkdir -p /srv/moodle/shared/moodledata
 sudo mkdir -p /srv/moodle/shared/env
 sudo mkdir -p /srv/moodle/shared/backups
 ```
+
+## If the server already hosts a site
+
+If this ECS instance is **not** a clean machine and already runs an old Moodle or another PHP site, do not deploy blindly.
+
+Before changing anything, identify:
+
+- which web server is active (`nginx`, `apache`, or both)
+- the real document root
+- the active virtual host / site config file
+- the current Moodle `config.php`
+- the current `moodledata` path
+- the current database host, name, and user
+
+Useful discovery commands:
+
+```bash
+sudo nginx -T 2>/dev/null | sed -n '1,220p'
+sudo apachectl -S 2>/dev/null
+sudo grep -Rni "DocumentRoot\\|root\\s\\|server_name\\|VirtualHost" /etc/nginx /etc/httpd /etc/apache2 2>/dev/null | sed -n '1,220p'
+sudo find /srv /var/www /usr/share/nginx/html /opt -type f -name config.php 2>/dev/null | sed -n '1,220p'
+```
+
+Capture this information before deploy:
+
+- the domain actually serving Moodle
+- the active docroot on disk
+- the current `wwwroot` from `config.php`
+- the current `dataroot`
+- whether the existing site should be upgraded in place or replaced with a new deployment path
+
+If the machine already hosts a production Moodle, do this before any code switch:
+
+1. backup the database
+2. backup `moodledata`
+3. copy the current `config.php`
+4. record the current git commit or deployed tarball version
+5. only then proceed with the deployment steps below
 
 ## First deployment
 

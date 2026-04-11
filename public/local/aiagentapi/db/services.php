@@ -314,3 +314,14 @@ $functions = [
         'capabilities' => 'local/aiagentapi:use',
     ],
 ];
+
+$services = [
+    'local_aiagentapi' => [
+        'functions' => array_keys($functions),
+        'restrictedusers' => 0,
+        'enabled' => 1,
+        'shortname' => 'local_aiagentapi',
+        'downloadfiles' => 1,
+        'uploadfiles' => 1,
+    ],
+];

@@ -43,6 +43,31 @@
         <INDEX NAME="idx_auditid" UNIQUE="true" FIELDS="auditid"/>
       </INDEXES>
     </TABLE>
+
+    <TABLE NAME="local_aiagentapi_deviceauth" COMMENT="Temporary device/browser authorization requests for CLI login">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="devicecodehash" TYPE="char" LENGTH="64" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="usercodehash" TYPE="char" LENGTH="64" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="service" TYPE="char" LENGTH="100" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="status" TYPE="char" LENGTH="20" NOTNULL="true" SEQUENCE="false" DEFAULT="pending"/>
+        <FIELD NAME="userid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" DEFAULT="0"/>
+        <FIELD NAME="username" TYPE="char" LENGTH="100" NOTNULL="false" SEQUENCE="false"/>
+        <FIELD NAME="wstoken" TYPE="text" NOTNULL="false" SEQUENCE="false"/>
+        <FIELD NAME="intervalsecs" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" DEFAULT="5"/>
+        <FIELD NAME="expiresat" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="lastpolledat" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" DEFAULT="0"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="uq_devicecodehash" UNIQUE="true" FIELDS="devicecodehash"/>
+        <INDEX NAME="uq_usercodehash" UNIQUE="true" FIELDS="usercodehash"/>
+        <INDEX NAME="idx_status_exp" UNIQUE="false" FIELDS="status,expiresat"/>
+      </INDEXES>
+    </TABLE>
   </TABLES>
 </XMLDB>
-

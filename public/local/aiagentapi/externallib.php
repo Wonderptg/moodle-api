@@ -89,17 +89,388 @@ class local_aiagentapi_external extends external_api {
     }
 
     /**
-     * Return minimal course metadata.
+     * Return cached category metadata for a course.
      *
-     * @param \stdClass $course
+     * @param int $categoryid
      * @return array
      */
-    private static function course_payload(\stdClass $course): array {
-        return [
-            'id' => (int)$course->id,
-            'shortname' => (string)$course->shortname,
-            'fullname' => (string)$course->fullname,
+    private static function course_category_metadata(int $categoryid): array {
+        global $DB;
+
+        static $cache = [];
+
+        if (array_key_exists($categoryid, $cache)) {
+            return $cache[$categoryid];
+        }
+
+        $metadata = [
+            'id' => $categoryid,
+            'name' => '',
+            'path' => '',
+            'displaypath' => '',
+            'pathnames' => [],
         ];
+
+        if ($categoryid > 0) {
+            $category = $DB->get_record('course_categories', ['id' => $categoryid], 'id,name,path', IGNORE_MISSING);
+            if ($category) {
+                $metadata['name'] = (string)$category->name;
+                $metadata['path'] = (string)$category->path;
+
+                $pathids = array_map('intval', preg_split('|/|', (string)$category->path, 0, PREG_SPLIT_NO_EMPTY));
+                if (!empty($pathids)) {
+                    $categories = $DB->get_records_list('course_categories', 'id', $pathids, '', 'id,name');
+                    foreach ($pathids as $pathid) {
+                        if (!empty($categories[$pathid])) {
+                            $metadata['pathnames'][] = (string)$categories[$pathid]->name;
+                        }
+                    }
+                }
+
+                $metadata['displaypath'] = implode(' / ', $metadata['pathnames']);
+            }
+        }
+
+        $cache[$categoryid] = $metadata;
+        return $metadata;
+    }
+
+    /**
+     * Count visible modules by module type for a course.
+     *
+     * @param \course_modinfo $modinfo
+     * @return array
+     */
+    private static function course_module_counts(\course_modinfo $modinfo): array {
+        $counts = [];
+        foreach ($modinfo->get_cms() as $cm) {
+            if (!$cm->uservisible) {
+                continue;
+            }
+            $modname = (string)$cm->modname;
+            $counts[$modname] = (int)($counts[$modname] ?? 0) + 1;
+        }
+        ksort($counts);
+        return $counts;
+    }
+
+    /**
+     * Normalize module count map for API output.
+     *
+     * @param array $counts
+     * @return array
+     */
+    private static function course_module_stats(array $counts): array {
+        $stats = [];
+        foreach ($counts as $modname => $count) {
+            $stats[] = [
+                'modname' => (string)$modname,
+                'count' => (int)$count,
+            ];
+        }
+
+        usort($stats, static function(array $a, array $b): int {
+            return [$b['count'], $a['modname']] <=> [$a['count'], $b['modname']];
+        });
+
+        return $stats;
+    }
+
+    /**
+     * Check whether a text contains any of the given phrases.
+     *
+     * @param string $text
+     * @param array $phrases
+     * @return bool
+     */
+    private static function text_contains_any(string $text, array $phrases): bool {
+        $text = trim($text);
+        if ($text === '') {
+            return false;
+        }
+
+        foreach ($phrases as $phrase) {
+            $phrase = trim((string)$phrase);
+            if ($phrase === '') {
+                continue;
+            }
+            if (function_exists('mb_stripos')) {
+                if (mb_stripos($text, $phrase) !== false) {
+                    return true;
+                }
+            } else if (stripos($text, $phrase) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Build an agent-friendly semantic profile for a course.
+     *
+     * @param \stdClass $course
+     * @param \course_modinfo|null $modinfo
+     * @param bool $includemodulestats
+     * @return array
+     */
+    private static function course_semantic_payload(
+        \stdClass $course,
+        ?\course_modinfo $modinfo = null,
+        bool $includemodulestats = false
+    ): array {
+        $modinfo = $modinfo ?? get_fast_modinfo($course);
+        $counts = self::course_module_counts($modinfo);
+        $category = self::course_category_metadata((int)($course->category ?? 0));
+
+        $quizcount = (int)($counts['quiz'] ?? 0);
+        $offlinequizcount = (int)($counts['offlinequiz'] ?? 0);
+        $qbankcount = (int)($counts['qbank'] ?? 0);
+        $pagecount = (int)($counts['page'] ?? 0);
+        $resourcecount = (int)($counts['resource'] ?? 0);
+        $urlcount = (int)($counts['url'] ?? 0);
+
+        $practicecount = $quizcount + $offlinequizcount + $qbankcount;
+        $watchcount = $pagecount + $resourcecount + $urlcount;
+
+        $categorytext = trim((string)$category['name'] . ' ' . (string)$category['displaypath']);
+        $coursetext = trim((string)($course->fullname ?? '') . ' ' . (string)($course->shortname ?? ''));
+        $alltext = trim($categorytext . ' ' . $coursetext);
+
+        $type = 'general_course';
+        $learningmode = 'mixed';
+        $strategy = 'generic_navigation';
+        $confidence = 'low';
+        $reasons = [];
+
+        if (self::text_contains_any($categorytext, ['试听课程']) || self::text_contains_any($alltext, ['试听', '试学', '体验课'])) {
+            $type = 'trial_course';
+            $learningmode = 'watch';
+            $strategy = 'trial_preview';
+            $confidence = 'high';
+            $reasons[] = 'Category or course title marks this as a trial/listening course.';
+        } else if (
+            self::text_contains_any($categorytext, ['提分训练营']) ||
+            (self::text_contains_any($alltext, ['题库', '训练营', '刷题']) && $practicecount >= max(2, $watchcount))
+        ) {
+            $type = 'question_bank';
+            $learningmode = 'practice';
+            $strategy = 'practice_first';
+            $confidence = 'high';
+            $reasons[] = 'Category or course title indicates a question-bank / training-camp flow.';
+        } else if (
+            self::text_contains_any($categorytext, ['视频课', '最新视频课']) ||
+            ($pagecount >= 3 && $watchcount >= max(4, $practicecount * 2))
+        ) {
+            $type = 'video_course';
+            $learningmode = 'watch';
+            $strategy = 'watch_first';
+            $confidence = self::text_contains_any($categorytext, ['视频课', '最新视频课']) ? 'high' : 'medium';
+            $reasons[] = 'Category or visible module mix matches a video-course structure.';
+        } else if ($practicecount >= 2 && $pagecount >= 2) {
+            $type = 'mixed_course';
+            $learningmode = 'mixed';
+            $strategy = 'mixed_route';
+            $confidence = 'medium';
+            $reasons[] = 'Visible module mix contains both practice-heavy and watch-heavy content.';
+        } else if ($practicecount >= 3) {
+            $type = 'question_bank';
+            $learningmode = 'practice';
+            $strategy = 'practice_first';
+            $confidence = 'medium';
+            $reasons[] = 'Visible modules are dominated by quizzes/question-bank activities.';
+        } else if ($pagecount >= 2 && $resourcecount >= 1) {
+            $type = 'video_course';
+            $learningmode = 'watch';
+            $strategy = 'watch_first';
+            $confidence = 'medium';
+            $reasons[] = 'Visible modules are dominated by page/resource lesson content.';
+        } else {
+            $reasons[] = 'No strong category or module signal was found; keep a generic navigation strategy.';
+        }
+
+        if ($practicecount > 0 || $watchcount > 0) {
+            $reasons[] = sprintf(
+                'Visible module mix: quiz=%d, offlinequiz=%d, qbank=%d, page=%d, resource=%d, url=%d.',
+                $quizcount,
+                $offlinequizcount,
+                $qbankcount,
+                $pagecount,
+                $resourcecount,
+                $urlcount
+            );
+        }
+
+        $payload = [
+            'course_type' => $type,
+            'learning_mode' => $learningmode,
+            'agent_strategy' => $strategy,
+            'confidence' => $confidence,
+            'reasons' => array_values($reasons),
+        ];
+
+        if ($includemodulestats) {
+            $payload['module_stats'] = self::course_module_stats($counts);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Standard semantic structure for course payloads.
+     *
+     * @param bool $includemodulestats
+     * @return external_single_structure
+     */
+    private static function course_semantic_structure(bool $includemodulestats = false): external_single_structure {
+        $fields = [
+            'course_type' => new external_value(PARAM_ALPHANUMEXT, 'Semantic course type'),
+            'learning_mode' => new external_value(PARAM_ALPHANUMEXT, 'Primary learning mode'),
+            'agent_strategy' => new external_value(PARAM_ALPHANUMEXT, 'Recommended agent strategy'),
+            'confidence' => new external_value(PARAM_ALPHANUMEXT, 'Inference confidence'),
+            'reasons' => new external_multiple_structure(
+                new external_value(PARAM_RAW, 'Inference reason'),
+                'Human-readable inference reasons'
+            ),
+        ];
+
+        if ($includemodulestats) {
+            $fields['module_stats'] = new external_multiple_structure(
+                new external_single_structure([
+                    'modname' => new external_value(PARAM_TEXT, 'Module type'),
+                    'count' => new external_value(PARAM_INT, 'Visible module count'),
+                ]),
+                'Visible module counts'
+            );
+        }
+
+        return new external_single_structure($fields);
+    }
+
+    /**
+     * Shared course structure for agent-facing API responses.
+     *
+     * @param bool $includevisibilitydates
+     * @param bool $includemodulestats
+     * @return external_single_structure
+     */
+    private static function course_structure(
+        bool $includevisibilitydates = false,
+        bool $includemodulestats = false
+    ): external_single_structure {
+        $fields = [
+            'id' => new external_value(PARAM_INT, 'Course id'),
+            'shortname' => new external_value(PARAM_RAW, 'Short name'),
+            'fullname' => new external_value(PARAM_RAW, 'Full name'),
+            'categoryid' => new external_value(PARAM_INT, 'Category id'),
+            'categoryname' => new external_value(PARAM_RAW, 'Category name'),
+            'categorypath' => new external_value(PARAM_RAW, 'Category id path'),
+            'categorydisplaypath' => new external_value(PARAM_RAW, 'Category display path'),
+            'categorypathnames' => new external_multiple_structure(
+                new external_value(PARAM_RAW, 'Category path segment'),
+                'Category path names'
+            ),
+            'format' => new external_value(PARAM_TEXT, 'Course format'),
+            'lang' => new external_value(PARAM_RAW, 'Course language'),
+            'enablecompletion' => new external_value(PARAM_BOOL, 'Completion enabled'),
+            'semantic' => self::course_semantic_structure($includemodulestats),
+        ];
+
+        if ($includevisibilitydates) {
+            $fields['visible'] = new external_value(PARAM_BOOL, 'Visible');
+            $fields['startdate'] = new external_value(PARAM_INT, 'Start date');
+            $fields['enddate'] = new external_value(PARAM_INT, 'End date');
+        }
+
+        return new external_single_structure($fields);
+    }
+
+    /**
+     * Return agent-friendly course metadata.
+     *
+     * @param \stdClass $course
+     * @param \course_modinfo|null $modinfo
+     * @param bool $includevisibilitydates
+     * @param bool $includemodulestats
+     * @return array
+     */
+    private static function course_payload(
+        \stdClass $course,
+        ?\course_modinfo $modinfo = null,
+        bool $includevisibilitydates = false,
+        bool $includemodulestats = false
+    ): array {
+        $category = self::course_category_metadata((int)($course->category ?? 0));
+
+        $payload = [
+            'id' => (int)($course->id ?? 0),
+            'shortname' => (string)($course->shortname ?? ''),
+            'fullname' => (string)($course->fullname ?? ''),
+            'categoryid' => (int)($course->category ?? 0),
+            'categoryname' => (string)$category['name'],
+            'categorypath' => (string)$category['path'],
+            'categorydisplaypath' => (string)$category['displaypath'],
+            'categorypathnames' => array_values($category['pathnames']),
+            'format' => (string)($course->format ?? ''),
+            'lang' => (string)($course->lang ?? ''),
+            'enablecompletion' => !empty($course->enablecompletion) ? 1 : 0,
+            'semantic' => self::course_semantic_payload($course, $modinfo, $includemodulestats),
+        ];
+
+        if ($includevisibilitydates) {
+            $payload['visible'] = !empty($course->visible) ? 1 : 0;
+            $payload['startdate'] = (int)($course->startdate ?? 0);
+            $payload['enddate'] = (int)($course->enddate ?? 0);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Return an empty course payload that still matches the public schema.
+     *
+     * @param int $courseid
+     * @param bool $includevisibilitydates
+     * @param bool $includemodulestats
+     * @return array
+     */
+    private static function empty_course_payload(
+        int $courseid = 0,
+        bool $includevisibilitydates = false,
+        bool $includemodulestats = false
+    ): array {
+        $payload = [
+            'id' => $courseid,
+            'shortname' => '',
+            'fullname' => '',
+            'categoryid' => 0,
+            'categoryname' => '',
+            'categorypath' => '',
+            'categorydisplaypath' => '',
+            'categorypathnames' => [],
+            'format' => '',
+            'lang' => '',
+            'enablecompletion' => 0,
+            'semantic' => [
+                'course_type' => 'general_course',
+                'learning_mode' => 'mixed',
+                'agent_strategy' => 'generic_navigation',
+                'confidence' => 'low',
+                'reasons' => [],
+            ],
+        ];
+
+        if ($includemodulestats) {
+            $payload['semantic']['module_stats'] = [];
+        }
+
+        if ($includevisibilitydates) {
+            $payload['visible'] = 0;
+            $payload['startdate'] = 0;
+            $payload['enddate'] = 0;
+        }
+
+        return $payload;
     }
 
     /**
@@ -901,16 +1272,19 @@ class local_aiagentapi_external extends external_api {
             ],
             [
                 'name' => 'local_aiagentapi_courses_list_my',
-                'description' => 'List current user courses with minimal metadata.',
+                'description' => 'List current user courses with category and semantic metadata for agent routing.',
                 'type' => 'read',
                 'capabilities' => ['local/aiagentapi:use'],
                 'idempotent' => true,
                 'supports_dry_run' => false,
                 'params' => [],
                 'data_fields' => [
-                    'courses[]',
+                    'courses[].categoryname',
+                    'courses[].semantic.course_type',
+                    'courses[].semantic.learning_mode',
+                    'courses[].semantic.agent_strategy',
                 ],
-                'notes' => 'Returns active enrolled courses for the current user.',
+                'notes' => 'Returns active enrolled courses plus agent-friendly semantics inferred from category and visible module mix.',
             ],
             [
                 'name' => 'local_aiagentapi_course_get_outline',
@@ -931,10 +1305,10 @@ class local_aiagentapi_external extends external_api {
                     ],
                 ],
                 'data_fields' => [
-                    'course',
+                    'course.semantic.course_type',
                     'sections[]',
                 ],
-                'notes' => 'Only user-visible modules are returned.',
+                'notes' => 'Only user-visible modules are returned, and the course header includes semantic classification for agent planning.',
             ],
             [
                 'name' => 'local_aiagentapi_quiz_list_by_course',
@@ -2262,18 +2636,7 @@ class local_aiagentapi_external extends external_api {
             );
             $payload = [];
             foreach ($courses as $course) {
-                $payload[] = [
-                    'id' => (int)$course->id,
-                    'shortname' => (string)$course->shortname,
-                    'fullname' => (string)$course->fullname,
-                    'categoryid' => (int)$course->category,
-                    'visible' => !empty($course->visible) ? 1 : 0,
-                    'startdate' => (int)($course->startdate ?? 0),
-                    'enddate' => (int)($course->enddate ?? 0),
-                    'format' => (string)($course->format ?? ''),
-                    'lang' => (string)($course->lang ?? ''),
-                    'enablecompletion' => !empty($course->enablecompletion) ? 1 : 0,
-                ];
+                $payload[] = self::course_payload($course, null, true, true);
             }
 
             usort($payload, static function(array $a, array $b): int {
@@ -2299,18 +2662,7 @@ class local_aiagentapi_external extends external_api {
         return self::envelope_returns(
             new external_single_structure([
                 'courses' => new external_multiple_structure(
-                    new external_single_structure([
-                        'id' => new external_value(PARAM_INT, 'Course id'),
-                        'shortname' => new external_value(PARAM_RAW, 'Short name'),
-                        'fullname' => new external_value(PARAM_RAW, 'Full name'),
-                        'categoryid' => new external_value(PARAM_INT, 'Category id'),
-                        'visible' => new external_value(PARAM_BOOL, 'Visible'),
-                        'startdate' => new external_value(PARAM_INT, 'Start date'),
-                        'enddate' => new external_value(PARAM_INT, 'End date'),
-                        'format' => new external_value(PARAM_TEXT, 'Course format'),
-                        'lang' => new external_value(PARAM_RAW, 'Course language'),
-                        'enablecompletion' => new external_value(PARAM_BOOL, 'Completion enabled'),
-                    ])
+                    self::course_structure(true, true)
                 ),
             ])
         );
@@ -2392,11 +2744,7 @@ class local_aiagentapi_external extends external_api {
             }
 
             $response = self::response_ok($auditid, [
-                'course' => [
-                    'id' => (int)$course->id,
-                    'shortname' => (string)$course->shortname,
-                    'fullname' => (string)$course->fullname,
-                ],
+                'course' => self::course_payload($course, $modinfo),
                 'sections' => $sections,
             ]);
             self::audit($USER->id, 'course_get_outline', true, $auditid, $params, $response);
@@ -2416,11 +2764,7 @@ class local_aiagentapi_external extends external_api {
     public static function course_get_outline_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Short name'),
-                    'fullname' => new external_value(PARAM_RAW, 'Full name'),
-                ]),
+                'course' => self::course_structure(),
                 'sections' => new external_multiple_structure(
                     new external_single_structure([
                         'id' => new external_value(PARAM_INT, 'Section id'),
@@ -2498,17 +2842,16 @@ class local_aiagentapi_external extends external_api {
             });
 
             $response = self::response_ok($auditid, [
-                'course' => [
-                    'id' => (int)$course->id,
-                    'shortname' => (string)$course->shortname,
-                    'fullname' => (string)$course->fullname,
-                ],
+                'course' => self::course_payload($course, $modinfo),
                 'quizzes' => $quizzes,
             ]);
             self::audit($USER->id, 'quiz_list_by_course', true, $auditid, $params, $response);
             return $response;
         } catch (\Throwable $e) {
-            $response = self::response_error($auditid, 'quiz_list_failed', $e->getMessage());
+            $response = self::response_error($auditid, 'quiz_list_failed', $e->getMessage(), false, false, [
+                'course' => self::empty_course_payload((int)$params['courseid']),
+                'quizzes' => [],
+            ]);
             self::audit($USER->id, 'quiz_list_by_course', false, $auditid, $params, $response);
             return $response;
         }
@@ -2522,11 +2865,7 @@ class local_aiagentapi_external extends external_api {
     public static function quiz_list_by_course_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Short name'),
-                    'fullname' => new external_value(PARAM_RAW, 'Full name'),
-                ]),
+                'course' => self::course_structure(),
                 'quizzes' => new external_multiple_structure(
                     new external_single_structure([
                         'cmid' => new external_value(PARAM_INT, 'Course module id'),
@@ -2604,17 +2943,16 @@ class local_aiagentapi_external extends external_api {
             });
 
             $response = self::response_ok($auditid, [
-                'course' => [
-                    'id' => (int)$course->id,
-                    'shortname' => (string)$course->shortname,
-                    'fullname' => (string)$course->fullname,
-                ],
+                'course' => self::course_payload($course, $modinfo),
                 'activities' => $activities,
             ]);
             self::audit($USER->id, 'activities_list_by_course', true, $auditid, $params, $response);
             return $response;
         } catch (\Throwable $e) {
-            $response = self::response_error($auditid, 'activities_list_failed', $e->getMessage());
+            $response = self::response_error($auditid, 'activities_list_failed', $e->getMessage(), false, false, [
+                'course' => self::empty_course_payload((int)$params['courseid']),
+                'activities' => [],
+            ]);
             self::audit($USER->id, 'activities_list_by_course', false, $auditid, $params, $response);
             return $response;
         }
@@ -2628,11 +2966,7 @@ class local_aiagentapi_external extends external_api {
     public static function activities_list_by_course_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Short name'),
-                    'fullname' => new external_value(PARAM_RAW, 'Full name'),
-                ]),
+                'course' => self::course_structure(),
                 'activities' => new external_multiple_structure(
                     new external_single_structure([
                         'cmid' => new external_value(PARAM_INT, 'Course module id'),
@@ -2718,17 +3052,16 @@ class local_aiagentapi_external extends external_api {
             });
 
             $response = self::response_ok($auditid, [
-                'course' => [
-                    'id' => (int)$course->id,
-                    'shortname' => (string)$course->shortname,
-                    'fullname' => (string)$course->fullname,
-                ],
+                'course' => self::course_payload($course, $modinfo),
                 'assignments' => $assignments,
             ]);
             self::audit($USER->id, 'assignments_list_by_course', true, $auditid, $params, $response);
             return $response;
         } catch (\Throwable $e) {
-            $response = self::response_error($auditid, 'assignments_list_failed', $e->getMessage());
+            $response = self::response_error($auditid, 'assignments_list_failed', $e->getMessage(), false, false, [
+                'course' => self::empty_course_payload((int)$params['courseid']),
+                'assignments' => [],
+            ]);
             self::audit($USER->id, 'assignments_list_by_course', false, $auditid, $params, $response);
             return $response;
         }
@@ -2742,11 +3075,7 @@ class local_aiagentapi_external extends external_api {
     public static function assignments_list_by_course_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Short name'),
-                    'fullname' => new external_value(PARAM_RAW, 'Full name'),
-                ]),
+                'course' => self::course_structure(),
                 'assignments' => new external_multiple_structure(
                     new external_single_structure([
                         'cmid' => new external_value(PARAM_INT, 'Course module id'),
@@ -3706,7 +4035,7 @@ class local_aiagentapi_external extends external_api {
             return $response;
         } catch (\Throwable $e) {
             $response = self::response_error($auditid, 'course_activity_detail_failed', $e->getMessage(), false, false, [
-                'course' => ['id' => 0, 'shortname' => '', 'fullname' => ''],
+                'course' => self::empty_course_payload(),
                 'activity' => [
                     'cmid' => (int)$params['cmid'],
                     'instance' => 0,
@@ -3736,11 +4065,7 @@ class local_aiagentapi_external extends external_api {
     public static function course_activity_detail_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Short name'),
-                    'fullname' => new external_value(PARAM_RAW, 'Full name'),
-                ]),
+                'course' => self::course_structure(),
                 'activity' => new external_single_structure([
                     'cmid' => new external_value(PARAM_INT, 'Course module id'),
                     'instance' => new external_value(PARAM_INT, 'Module instance'),
@@ -3828,7 +4153,7 @@ class local_aiagentapi_external extends external_api {
             return $response;
         } catch (\Throwable $e) {
             $response = self::response_error($auditid, 'resources_list_by_course_failed', $e->getMessage(), false, false, [
-                'course' => ['id' => (int)$params['courseid'], 'shortname' => '', 'fullname' => ''],
+                'course' => self::empty_course_payload((int)$params['courseid']),
                 'resources' => [],
             ]);
             self::audit($USER->id, 'resources_list_by_course', false, $auditid, $params, $response);
@@ -3844,11 +4169,7 @@ class local_aiagentapi_external extends external_api {
     public static function resources_list_by_course_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Short name'),
-                    'fullname' => new external_value(PARAM_RAW, 'Full name'),
-                ]),
+                'course' => self::course_structure(),
                 'resources' => new external_multiple_structure(
                     new external_single_structure([
                         'cmid' => new external_value(PARAM_INT, 'Course module id'),
@@ -5044,7 +5365,7 @@ class local_aiagentapi_external extends external_api {
             return $response;
         } catch (\Throwable $e) {
             $response = self::response_error($auditid, 'quiz_start_attempt_failed', $e->getMessage(), (bool)$params['dry_run'], false, [
-                'course' => ['id' => 0, 'shortname' => '', 'fullname' => ''],
+                'course' => self::empty_course_payload(),
                 'quiz' => ['id' => (int)$params['quizid'], 'cmid' => 0, 'name' => '', 'attempts' => 0, 'timeopen' => 0, 'timeclose' => 0, 'timelimit' => 0],
                 'attempt' => ['id' => 0, 'quizid' => (int)$params['quizid'], 'userid' => (int)$USER->id, 'attempt' => 0, 'state' => '', 'currentpage' => 0, 'preview' => 0, 'timestart' => 0, 'timefinish' => 0, 'timemodified' => 0, 'timecheckstate' => 0, 'sumgrades' => ''],
                 'messages' => [],
@@ -5065,11 +5386,7 @@ class local_aiagentapi_external extends external_api {
     public static function quiz_start_attempt_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Course shortname'),
-                    'fullname' => new external_value(PARAM_RAW, 'Course fullname'),
-                ]),
+                'course' => self::course_structure(),
                 'quiz' => new external_single_structure([
                     'id' => new external_value(PARAM_INT, 'Quiz id'),
                     'cmid' => new external_value(PARAM_INT, 'Course module id'),
@@ -6454,7 +6771,7 @@ class local_aiagentapi_external extends external_api {
                 (bool)$params['dry_run'],
                 false,
                 [
-                    'course' => ['id' => 0, 'shortname' => '', 'fullname' => ''],
+                    'course' => self::empty_course_payload(),
                     'assignment' => ['id' => (int)$params['assignid'], 'cmid' => 0, 'name' => '', 'duedate' => 0, 'cutoffdate' => 0],
                     'submission' => ['id' => 0, 'status' => '', 'attemptnumber' => 0, 'timemodified' => 0, 'text' => '', 'format' => (int)$params['format'], 'wordcount' => 0],
                     'preview' => ['text_preview' => '', 'format' => (int)$params['format'], 'text_length' => 0],
@@ -6474,11 +6791,7 @@ class local_aiagentapi_external extends external_api {
     public static function assignment_save_draft_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Course shortname'),
-                    'fullname' => new external_value(PARAM_RAW, 'Course fullname'),
-                ]),
+                'course' => self::course_structure(),
                 'assignment' => new external_single_structure([
                     'id' => new external_value(PARAM_INT, 'Assignment id'),
                     'cmid' => new external_value(PARAM_INT, 'Course module id'),
@@ -6645,7 +6958,7 @@ class local_aiagentapi_external extends external_api {
                 (bool)$params['dry_run'],
                 false,
                 [
-                    'course' => ['id' => 0, 'shortname' => '', 'fullname' => ''],
+                    'course' => self::empty_course_payload(),
                     'assignment' => ['id' => (int)$params['assignid'], 'cmid' => 0, 'name' => '', 'duedate' => 0, 'cutoffdate' => 0],
                     'submission' => ['id' => 0, 'status' => '', 'attemptnumber' => 0, 'timemodified' => 0, 'submittedforgrading' => 0],
                     'warnings' => [],
@@ -6664,11 +6977,7 @@ class local_aiagentapi_external extends external_api {
     public static function assignment_submit_final_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Course shortname'),
-                    'fullname' => new external_value(PARAM_RAW, 'Course fullname'),
-                ]),
+                'course' => self::course_structure(),
                 'assignment' => new external_single_structure([
                     'id' => new external_value(PARAM_INT, 'Assignment id'),
                     'cmid' => new external_value(PARAM_INT, 'Course module id'),
@@ -6852,7 +7161,7 @@ class local_aiagentapi_external extends external_api {
                 (bool)$params['dry_run'],
                 false,
                 [
-                    'course' => ['id' => 0, 'shortname' => '', 'fullname' => ''],
+                    'course' => self::empty_course_payload(),
                     'forum' => ['id' => (int)$params['forumid'], 'cmid' => 0, 'name' => '', 'type' => ''],
                     'discussion' => ['id' => 0, 'postid' => 0, 'subject' => '', 'message_preview' => '', 'authorid' => 0, 'authorname' => '', 'created' => 0, 'url' => ''],
                     'warnings' => [],
@@ -6871,11 +7180,7 @@ class local_aiagentapi_external extends external_api {
     public static function forum_create_discussion_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Course shortname'),
-                    'fullname' => new external_value(PARAM_RAW, 'Course fullname'),
-                ]),
+                'course' => self::course_structure(),
                 'forum' => new external_single_structure([
                     'id' => new external_value(PARAM_INT, 'Forum id'),
                     'cmid' => new external_value(PARAM_INT, 'Course module id'),
@@ -7063,7 +7368,7 @@ class local_aiagentapi_external extends external_api {
                 (bool)$params['dry_run'],
                 false,
                 [
-                    'course' => ['id' => 0, 'shortname' => '', 'fullname' => ''],
+                    'course' => self::empty_course_payload(),
                     'forum' => ['id' => 0, 'cmid' => 0, 'name' => '', 'discussionid' => 0],
                     'reply' => ['postid' => 0, 'parentpostid' => (int)$params['postid'], 'discussionid' => 0, 'subject' => '', 'message_preview' => '', 'authorid' => 0, 'authorname' => '', 'created' => 0, 'url' => ''],
                     'warnings' => [],
@@ -7082,11 +7387,7 @@ class local_aiagentapi_external extends external_api {
     public static function forum_reply_post_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Course shortname'),
-                    'fullname' => new external_value(PARAM_RAW, 'Course fullname'),
-                ]),
+                'course' => self::course_structure(),
                 'forum' => new external_single_structure([
                     'id' => new external_value(PARAM_INT, 'Forum id'),
                     'cmid' => new external_value(PARAM_INT, 'Course module id'),
@@ -7273,7 +7574,7 @@ class local_aiagentapi_external extends external_api {
                 (bool)$params['dry_run'],
                 false,
                 [
-                    'course' => ['id' => 0, 'shortname' => '', 'fullname' => ''],
+                    'course' => self::empty_course_payload(),
                     'forum' => ['id' => 0, 'cmid' => 0, 'name' => '', 'discussionid' => 0],
                     'post' => ['postid' => (int)$params['postid'], 'parentpostid' => 0, 'discussionid' => 0, 'subject' => '', 'message_preview' => '', 'authorid' => 0, 'authorname' => '', 'created' => 0, 'updated' => 0, 'url' => ''],
                     'warnings' => [],
@@ -7292,11 +7593,7 @@ class local_aiagentapi_external extends external_api {
     public static function forum_update_post_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Course shortname'),
-                    'fullname' => new external_value(PARAM_RAW, 'Course fullname'),
-                ]),
+                'course' => self::course_structure(),
                 'forum' => new external_single_structure([
                     'id' => new external_value(PARAM_INT, 'Forum id'),
                     'cmid' => new external_value(PARAM_INT, 'Course module id'),
@@ -7446,7 +7743,7 @@ class local_aiagentapi_external extends external_api {
                 (bool)$params['dry_run'],
                 false,
                 [
-                    'course' => ['id' => 0, 'shortname' => '', 'fullname' => ''],
+                    'course' => self::empty_course_payload(),
                     'forum' => ['id' => 0, 'cmid' => 0, 'name' => ''],
                     'target' => ['postid' => (int)$params['postid'], 'discussionid' => 0, 'kind' => '', 'subject' => '', 'authorid' => 0, 'authorname' => '', 'url' => ''],
                     'warnings' => [],
@@ -7465,11 +7762,7 @@ class local_aiagentapi_external extends external_api {
     public static function forum_delete_post_returns(): \core_external\external_description {
         return self::envelope_returns(
             new external_single_structure([
-                'course' => new external_single_structure([
-                    'id' => new external_value(PARAM_INT, 'Course id'),
-                    'shortname' => new external_value(PARAM_RAW, 'Course shortname'),
-                    'fullname' => new external_value(PARAM_RAW, 'Course fullname'),
-                ]),
+                'course' => self::course_structure(),
                 'forum' => new external_single_structure([
                     'id' => new external_value(PARAM_INT, 'Forum id'),
                     'cmid' => new external_value(PARAM_INT, 'Course module id'),

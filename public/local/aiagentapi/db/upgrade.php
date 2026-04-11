@@ -33,6 +33,8 @@ defined('MOODLE_INTERNAL') || die();
 function xmldb_local_aiagentapi_upgrade(int $oldversion): bool {
     global $DB;
 
+    $dbman = $DB->get_manager();
+
     // 2026021300: replace CAP_PROHIBIT with CAP_PREVENT for default archetype roles.
     if ($oldversion < 2026021300) {
         $caps = [
@@ -66,6 +68,36 @@ function xmldb_local_aiagentapi_upgrade(int $oldversion): bool {
         upgrade_plugin_savepoint(true, 2026021300, 'local', 'aiagentapi');
     }
 
+    // 2026041100: add device/browser login request table for CLI auth.
+    if ($oldversion < 2026041100) {
+        $table = new xmldb_table('local_aiagentapi_deviceauth');
+
+        $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+        $table->add_field('devicecodehash', XMLDB_TYPE_CHAR, '64', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('usercodehash', XMLDB_TYPE_CHAR, '64', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('service', XMLDB_TYPE_CHAR, '100', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('status', XMLDB_TYPE_CHAR, '20', null, XMLDB_NOTNULL, null, 'pending');
+        $table->add_field('userid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_field('username', XMLDB_TYPE_CHAR, '100', null, null, null, null);
+        $table->add_field('wstoken', XMLDB_TYPE_TEXT, null, null, null, null, null);
+        $table->add_field('intervalsecs', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '5');
+        $table->add_field('expiresat', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('lastpolledat', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, null);
+
+        $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+
+        $table->add_index('uq_devicecodehash', XMLDB_INDEX_UNIQUE, ['devicecodehash']);
+        $table->add_index('uq_usercodehash', XMLDB_INDEX_UNIQUE, ['usercodehash']);
+        $table->add_index('idx_status_exp', XMLDB_INDEX_NOTUNIQUE, ['status', 'expiresat']);
+
+        if (!$dbman->table_exists($table)) {
+            $dbman->create_table($table);
+        }
+
+        upgrade_plugin_savepoint(true, 2026041100, 'local', 'aiagentapi');
+    }
+
     return true;
 }
-

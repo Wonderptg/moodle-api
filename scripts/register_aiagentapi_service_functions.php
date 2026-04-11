@@ -43,9 +43,24 @@ $service = $DB->get_record_select(
         'shortname' => $options['service-shortname'],
         'name' => $options['service-shortname'],
     ],
-    '*',
-    MUST_EXIST
+    '*'
 );
+if (!$service) {
+    $service = (object) [
+        'name' => $options['service-shortname'],
+        'enabled' => 1,
+        'requiredcapability' => null,
+        'restrictedusers' => 0,
+        'component' => 'local_aiagentapi',
+        'timecreated' => time(),
+        'timemodified' => null,
+        'shortname' => $options['service-shortname'],
+        'downloadfiles' => 1,
+        'uploadfiles' => 1,
+    ];
+    $service->id = $DB->insert_record('external_services', $service);
+}
+
 $functions = $DB->get_records_select(
     'external_functions',
     $DB->sql_like('name', '?'),
