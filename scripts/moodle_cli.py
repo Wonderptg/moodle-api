@@ -12,18 +12,31 @@ Design goals:
 from __future__ import annotations
 
 import argparse
+import csv
+import getpass
 import json
 import os
+import platform
 import re
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import webbrowser
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
+
+CONFIG_SCHEMA_VERSION = 1
+DEFAULT_SERVICE_SHORTNAME = "local_aiagentapi"
+DEFAULT_PROFILE_NAME = "default"
+PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+KEYCHAIN_SERVICE = "moodle-cli"
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -39,6 +52,10 @@ EXIT_CANCELLED = 130
 
 ENVELOPE_META_KEYS = {
     "ok",
+    "identity",
+    "meta",
+    "data",
+    "_notice",
     "audit_id",
     "replayed",
     "dry_run",
@@ -54,9 +71,22 @@ ENVELOPE_META_KEYS = {
 
 
 class CliError(Exception):
-    def __init__(self, message: str, exit_code: int = EXIT_ERROR) -> None:
+    def __init__(
+        self,
+        message: str,
+        exit_code: int = EXIT_ERROR,
+        *,
+        error_type: str = "",
+        error_code: Optional[Any] = None,
+        hint: str = "",
+        detail: Optional[Any] = None,
+    ) -> None:
         super().__init__(message)
         self.exit_code = exit_code
+        self.error_type = str(error_type or "")
+        self.error_code = error_code
+        self.hint = str(hint or "")
+        self.detail = detail
 
 
 def _eprint(*args: object) -> None:
@@ -98,6 +128,461 @@ def load_env_file(path: str) -> Dict[str, str]:
 
 def normalize_base_url(base_url: str) -> str:
     return base_url.rstrip("/")
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def resolve_default_config_dir() -> str:
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg:
+        return os.path.join(os.path.expanduser(xdg), "moodle-cli")
+    return os.path.join(os.path.expanduser("~/.config"), "moodle-cli")
+
+
+def resolve_config_dir(raw: str, env: Dict[str, str]) -> str:
+    value = (
+        raw
+        or env.get("MOODLE_CLI_CONFIG_DIR")
+        or os.environ.get("MOODLE_CLI_CONFIG_DIR", "")
+        or resolve_default_config_dir()
+    )
+    return os.path.abspath(os.path.expanduser(value))
+
+
+def config_path_for_dir(config_dir: str) -> str:
+    return os.path.join(config_dir, "config.json")
+
+
+def blank_cli_config() -> Dict[str, Any]:
+    return {
+        "version": CONFIG_SCHEMA_VERSION,
+        "current_profile": "",
+        "profiles": {},
+    }
+
+
+def normalize_profile_name(name: str) -> str:
+    value = (name or "").strip()
+    if not value:
+        return DEFAULT_PROFILE_NAME
+    if not PROFILE_NAME_RE.fullmatch(value):
+        raise CliError(
+            "invalid profile name: use letters, numbers, dot, underscore, or dash",
+            EXIT_USAGE,
+        )
+    return value
+
+
+def load_cli_config(config_dir: str) -> Dict[str, Any]:
+    path = config_path_for_dir(config_dir)
+    if not os.path.exists(path):
+        return blank_cli_config()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except json.JSONDecodeError as e:
+        raise CliError(f"invalid CLI config JSON: {e}", EXIT_CONFIG) from e
+    except OSError as e:
+        raise CliError(f"cannot read CLI config: {e}", EXIT_CONFIG) from e
+    if not isinstance(loaded, dict):
+        raise CliError("invalid CLI config: expected top-level object", EXIT_CONFIG)
+    config = blank_cli_config()
+    config["version"] = int(loaded.get("version") or CONFIG_SCHEMA_VERSION)
+    config["current_profile"] = str(loaded.get("current_profile") or "")
+    profiles = loaded.get("profiles")
+    if isinstance(profiles, dict):
+        config["profiles"] = {
+            str(name): value
+            for name, value in profiles.items()
+            if isinstance(name, str) and isinstance(value, dict)
+        }
+    return config
+
+
+def save_cli_config(config_dir: str, config: Dict[str, Any]) -> None:
+    os.makedirs(config_dir, exist_ok=True)
+    path = config_path_for_dir(config_dir)
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    try:
+        os.chmod(config_dir, 0o700)
+    except OSError:
+        pass
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2, sort_keys=True)
+            f.write("\n")
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp_path, path)
+    except OSError as e:
+        raise CliError(f"cannot write CLI config: {e}", EXIT_CONFIG) from e
+
+
+def keychain_available() -> bool:
+    if env_bool("MOODLE_CLI_DISABLE_KEYCHAIN"):
+        return False
+    if platform.system().lower() != "darwin":
+        return False
+    return os.path.exists("/usr/bin/security")
+
+
+def keychain_set(account: str, secret: str) -> None:
+    if not keychain_available():
+        raise CliError("keychain not available", EXIT_CONFIG)
+    proc = subprocess.run(
+        ["/usr/bin/security", "add-generic-password", "-U", "-a", account, "-s", KEYCHAIN_SERVICE, "-w", secret],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        message = (proc.stderr or proc.stdout or "keychain write failed").strip()
+        raise CliError(f"cannot store token in keychain: {message}", EXIT_CONFIG)
+
+
+def keychain_get(account: str) -> str:
+    if not keychain_available():
+        return ""
+    proc = subprocess.run(
+        ["/usr/bin/security", "find-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE, "-w"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def keychain_remove(account: str) -> None:
+    if not keychain_available():
+        return
+    subprocess.run(
+        ["/usr/bin/security", "delete-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def profile_token_account(profile_name: str, profile: Dict[str, Any]) -> str:
+    base_url = normalize_base_url(str(profile.get("base_url") or ""))
+    username = str(profile.get("username") or "")
+    service = str(profile.get("service") or DEFAULT_SERVICE_SHORTNAME)
+    return f"profile:{profile_name}:{base_url}:{service}:{username}"
+
+
+def resolve_profile_token(profile_name: str, profile: Dict[str, Any]) -> str:
+    storage = str(profile.get("token_storage") or "")
+    if storage == "keychain":
+        account = str(profile.get("token_account") or profile_token_account(profile_name, profile))
+        return keychain_get(account)
+    return str(profile.get("token") or "")
+
+
+def clear_profile_token(profile_name: str, profile: Dict[str, Any]) -> Dict[str, Any]:
+    updated = dict(profile)
+    account = str(updated.get("token_account") or profile_token_account(profile_name, updated))
+    if str(updated.get("token_storage") or "") == "keychain":
+        keychain_remove(account)
+    for key in ("token", "token_account", "token_storage"):
+        updated.pop(key, None)
+    return updated
+
+
+def store_profile_token(profile_name: str, profile: Dict[str, Any], token: str) -> Tuple[Dict[str, Any], str]:
+    updated = clear_profile_token(profile_name, profile)
+    if keychain_available():
+        account = profile_token_account(profile_name, updated)
+        keychain_set(account, token)
+        updated["token_storage"] = "keychain"
+        updated["token_account"] = account
+        return updated, "keychain"
+    updated["token_storage"] = "file"
+    updated["token"] = token
+    return updated, "file"
+
+
+def get_profile(config: Dict[str, Any], profile_name: str) -> Dict[str, Any]:
+    profiles = config.get("profiles")
+    if not isinstance(profiles, dict):
+        return {}
+    value = profiles.get(profile_name)
+    return value if isinstance(value, dict) else {}
+
+
+def set_profile(config: Dict[str, Any], profile_name: str, profile: Dict[str, Any]) -> None:
+    profiles = config.setdefault("profiles", {})
+    if not isinstance(profiles, dict):
+        config["profiles"] = {}
+        profiles = config["profiles"]
+    profiles[profile_name] = profile
+
+
+def delete_profile(config: Dict[str, Any], profile_name: str) -> bool:
+    profiles = config.get("profiles")
+    if not isinstance(profiles, dict) or profile_name not in profiles:
+        return False
+    del profiles[profile_name]
+    if config.get("current_profile") == profile_name:
+        config["current_profile"] = ""
+    return True
+
+
+def summarize_profile(profile_name: str, profile: Dict[str, Any], *, is_current: bool = False) -> Dict[str, Any]:
+    token = resolve_profile_token(profile_name, profile)
+    storage = str(profile.get("token_storage") or ("file" if profile.get("token") else ""))
+    return {
+        "name": profile_name,
+        "is_current": is_current,
+        "base_url": str(profile.get("base_url") or ""),
+        "service": str(profile.get("service") or DEFAULT_SERVICE_SHORTNAME),
+        "username": str(profile.get("username") or ""),
+        "full_name": str(profile.get("full_name") or ""),
+        "user_id": int(profile.get("user_id") or 0),
+        "has_token": bool(token),
+        "token_storage": storage,
+        "token_preview": redact_token(token),
+        "last_login_at": str(profile.get("last_login_at") or ""),
+        "last_verified_at": str(profile.get("last_verified_at") or ""),
+    }
+
+
+def redact_token(token: str) -> str:
+    if not token:
+        return ""
+    if len(token) <= 8:
+        return "*" * len(token)
+    return f"{token[:4]}...{token[-4:]}"
+
+
+def decode_json_bytes(raw: bytes, *, failure_message: str, exit_code: int) -> Any:
+    text = raw.decode("utf-8", errors="replace").strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])\s*$", text)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except Exception:
+                pass
+        sample = text[:300]
+        raise CliError(f"{failure_message}: {sample}", exit_code)
+
+
+def prompt_text(label: str, *, default: str = "", secret: bool = False) -> str:
+    hint = f" [{default}]" if default else ""
+    if secret:
+        value = getpass.getpass(f"{label}{hint}: ")
+    else:
+        value = input(f"{label}{hint}: ")
+    value = value.strip()
+    return value or default
+
+
+def resolve_target_profile(args: argparse.Namespace) -> str:
+    return normalize_profile_name(getattr(args, "profile_name", "") or args.profile)
+
+
+def request_login_token(
+    base_url: str,
+    username: str,
+    password: str,
+    service: str,
+    timeout: float,
+) -> Dict[str, Any]:
+    endpoint = f"{base_url}/login/token.php"
+    payload = urllib.parse.urlencode({
+        "username": username,
+        "password": password,
+        "service": service,
+    }).encode("utf-8")
+    req = urllib.request.Request(endpoint, method="POST", data=payload)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            status = resp.status
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        status = e.code
+    except urllib.error.URLError as e:
+        raise CliError(f"login failed: {e.reason}", EXIT_RETRYABLE) from e
+    except Exception as e:
+        raise CliError(f"login failed: {e}", EXIT_RETRYABLE) from e
+
+    decoded = decode_json_bytes(
+        raw,
+        failure_message="login failed: expected JSON response",
+        exit_code=EXIT_RETRYABLE,
+    )
+    if not isinstance(decoded, dict):
+        raise CliError("login failed: unexpected response payload", EXIT_AUTH_REQUIRED)
+    if decoded.get("token"):
+        return decoded
+    message = str(
+        decoded.get("error")
+        or decoded.get("error_description")
+        or decoded.get("debuginfo")
+        or decoded.get("message")
+        or "invalid login"
+    )
+    exit_code = EXIT_AUTH_REQUIRED if status < 500 else EXIT_RETRYABLE
+    raise CliError(f"login failed: {message}", exit_code)
+
+
+def device_flow_endpoint(base_url: str) -> str:
+    return f"{base_url}/local/aiagentapi/device_flow.php"
+
+
+def request_device_authorization(base_url: str, service: str, timeout: float) -> Dict[str, Any]:
+    endpoint = device_flow_endpoint(base_url)
+    payload = urllib.parse.urlencode({
+        "action": "start",
+        "service": service,
+    }).encode("utf-8")
+    req = urllib.request.Request(endpoint, method="POST", data=payload)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            status = resp.status
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        status = e.code
+    except urllib.error.URLError as e:
+        raise CliError(f"device login failed: {e.reason}", EXIT_RETRYABLE) from e
+    decoded = decode_json_bytes(
+        raw,
+        failure_message="device login failed: expected JSON response",
+        exit_code=EXIT_RETRYABLE,
+    )
+    if not isinstance(decoded, dict):
+        raise CliError("device login failed: unexpected response payload", EXIT_RETRYABLE)
+    if decoded.get("device_code"):
+        return decoded
+    message = str(decoded.get("error_description") or decoded.get("error") or "device authorization failed")
+    exit_code = EXIT_ERROR if status < 500 else EXIT_RETRYABLE
+    raise CliError(message, exit_code)
+
+
+def poll_device_authorization_once(base_url: str, device_code: str, timeout: float) -> Dict[str, Any]:
+    endpoint = device_flow_endpoint(base_url)
+    payload = urllib.parse.urlencode({
+        "action": "poll",
+        "device_code": device_code,
+    }).encode("utf-8")
+    req = urllib.request.Request(endpoint, method="POST", data=payload)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            status = resp.status
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        status = e.code
+    except urllib.error.URLError as e:
+        raise CliError(f"device login poll failed: {e.reason}", EXIT_RETRYABLE) from e
+    decoded = decode_json_bytes(
+        raw,
+        failure_message="device login poll failed: expected JSON response",
+        exit_code=EXIT_RETRYABLE,
+    )
+    if not isinstance(decoded, dict):
+        raise CliError("device login poll failed: unexpected response payload", EXIT_RETRYABLE)
+    decoded["_http_status"] = status
+    return decoded
+
+
+def wait_for_device_authorization(
+    base_url: str,
+    device_code: str,
+    *,
+    interval: int,
+    expires_in: int,
+    timeout: float,
+) -> Dict[str, Any]:
+    deadline = time.monotonic() + max(1, int(expires_in))
+    poll_every = max(1, int(interval))
+    while time.monotonic() < deadline:
+        payload = poll_device_authorization_once(base_url, device_code, timeout)
+        if payload.get("access_token"):
+            return payload
+        error = str(payload.get("error") or "")
+        if error == "authorization_pending":
+            time.sleep(poll_every)
+            continue
+        if error == "access_denied":
+            raise CliError(str(payload.get("error_description") or "authorization denied"), EXIT_AUTH_REQUIRED)
+        if error in {"expired_token", "invalid_grant"}:
+            raise CliError(str(payload.get("error_description") or "device code expired"), EXIT_AUTH_REQUIRED)
+        raise CliError(str(payload.get("error_description") or error or "device login failed"), EXIT_ERROR)
+    raise CliError("device authorization timed out", EXIT_AUTH_REQUIRED)
+
+
+def verify_profile_session(base_url: str, token: str, timeout: float) -> Dict[str, Any]:
+    return invoke_ws(base_url, token, "local_aiagentapi_get_user_context", {}, timeout)
+
+
+def probe_url(url: str, timeout: float, *, method: str = "GET") -> Tuple[bool, str]:
+    req = urllib.request.Request(url, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        if e.code < 500:
+            return True, f"HTTP {e.code}"
+        return False, f"HTTP {e.code}"
+    except Exception as e:
+        return False, str(e)
+
+
+def parse_http_status(detail: str) -> Optional[int]:
+    match = re.search(r"\bHTTP\s+(\d{3})\b", detail)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def persist_login_result(
+    args: argparse.Namespace,
+    profile_name: str,
+    profile: Dict[str, Any],
+    *,
+    base_url: str,
+    service: str,
+    token: str,
+    verified: Dict[str, Any],
+) -> Dict[str, Any]:
+    user = verified.get("data", {}).get("user", {}) if isinstance(verified, dict) else {}
+    profile.update({
+        "base_url": base_url,
+        "service": service,
+        "username": str(user.get("username") or str(profile.get("username") or "")),
+        "full_name": str(user.get("fullname") or ""),
+        "user_id": int(user.get("userid") or 0),
+        "last_login_at": utc_now_iso(),
+        "last_verified_at": utc_now_iso(),
+    })
+    profile, storage_backend = store_profile_token(profile_name, profile, token)
+    set_profile(args.cli_config, profile_name, profile)
+    args.cli_config["current_profile"] = profile_name
+    save_cli_config(args.config_dir, args.cli_config)
+    return {
+        "ok": True,
+        "storage_backend": storage_backend,
+        "profile": summarize_profile(profile_name, profile, is_current=True),
+        "user": user,
+        "context": verified.get("data", {}).get("context", {}) if isinstance(verified, dict) else {},
+    }
 
 
 def rewrite_desire_args(argv: Sequence[str]) -> List[str]:
@@ -158,11 +643,11 @@ def invoke_ws(base_url: str, token: str, wsfunction: str, params: Dict[str, Any]
     except Exception as e:
         raise CliError(f"request failed: {e}", EXIT_RETRYABLE) from e
 
-    try:
-        decoded = json.loads(raw.decode("utf-8", errors="strict"))
-    except Exception as e:
-        sample = raw[:300].decode("utf-8", errors="replace")
-        raise CliError(f"expected JSON response but got: {sample}", EXIT_RETRYABLE) from e
+    decoded = decode_json_bytes(
+        raw,
+        failure_message="expected JSON response but got",
+        exit_code=EXIT_RETRYABLE,
+    )
 
     handle_moodle_errors(decoded, status)
     return decoded
@@ -197,7 +682,8 @@ def unwrap_primary(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
 
-    if "data" in value and set(value.keys()).issuperset({"ok", "audit_id", "replayed", "dry_run", "data"}):
+    # Support both legacy Moodle envelope and Feishu-style envelope.
+    if "data" in value and "ok" in value:
         value = value["data"]
         if not isinstance(value, dict):
             return value
@@ -289,7 +775,1162 @@ def scalar_to_text(value: Any) -> str:
     return str(value)
 
 
+def command_path_starts_with(args: argparse.Namespace, prefix: Sequence[str]) -> bool:
+    path = list(getattr(args, "command_path", []) or [])
+    if len(path) < len(prefix):
+        return False
+    return path[: len(prefix)] == list(prefix)
+
+
+def command_path_equals(args: argparse.Namespace, target: Sequence[str]) -> bool:
+    return list(getattr(args, "command_path", []) or []) == list(target)
+
+
+def coerce_bool(value: Any) -> bool:
+    return bool(value)
+
+
+def iso_from_unix(value: Any) -> str:
+    try:
+        timestamp = int(value or 0)
+    except Exception:
+        return ""
+    if timestamp <= 0:
+        return ""
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def compact_text(value: Any, *, limit: int = 120) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def top_module_mix(module_stats: Sequence[Dict[str, Any]], *, limit: int = 3) -> str:
+    parts: List[str] = []
+    for item in list(module_stats)[:limit]:
+        modname = str(item.get("type") or item.get("modname") or "")
+        count = safe_int(item.get("count"))
+        if not modname:
+            continue
+        parts.append(f"{modname}:{count}")
+    return ", ".join(parts)
+
+
+KNOWN_ARRAY_FIELDS: Sequence[str] = (
+    "items",
+    "results",
+    "courses",
+    "sections",
+    "activities",
+    "resources",
+    "quizzes",
+    "notes",
+    "downloads",
+)
+
+
+def with_items_alias(data: Dict[str, Any], primary_key: str) -> Dict[str, Any]:
+    out = dict(data)
+    primary = out.get(primary_key)
+    if isinstance(primary, list):
+        out["items"] = primary
+    return out
+
+
+def find_array_field(data: Dict[str, Any]) -> str:
+    for name in KNOWN_ARRAY_FIELDS:
+        if isinstance(data.get(name), list):
+            return name
+    candidates = sorted(key for key, val in data.items() if isinstance(val, list))
+    return candidates[0] if candidates else ""
+
+
+def extract_items_for_output(value: Any) -> Optional[List[Any]]:
+    if isinstance(value, list):
+        return list(value)
+    if not isinstance(value, dict):
+        return None
+    data_obj = value.get("data")
+    if isinstance(data_obj, dict):
+        field = find_array_field(data_obj)
+        if field:
+            return list(data_obj.get(field) or [])
+    field = find_array_field(value)
+    if field:
+        return list(value.get(field) or [])
+    return None
+
+
+def build_cli_envelope(
+    *,
+    ok: bool,
+    data: Dict[str, Any],
+    meta: Optional[Dict[str, Any]] = None,
+    error: Optional[Dict[str, Any]] = None,
+    identity: str = "user",
+) -> Dict[str, Any]:
+    envelope: Dict[str, Any] = {
+        "ok": ok,
+        "identity": identity,
+        "data": data,
+    }
+    if meta:
+        envelope["meta"] = meta
+    if error:
+        envelope["error"] = error
+    return envelope
+
+
+ERROR_TYPE_BY_EXIT: Dict[int, str] = {
+    EXIT_ERROR: "api_error",
+    EXIT_USAGE: "validation",
+    EXIT_EMPTY_RESULTS: "empty_results",
+    EXIT_AUTH_REQUIRED: "auth",
+    EXIT_NOT_FOUND: "not_found",
+    EXIT_PERMISSION_DENIED: "permission",
+    EXIT_RATE_LIMITED: "rate_limit",
+    EXIT_RETRYABLE: "network",
+    EXIT_CONFIG: "config",
+    EXIT_CANCELLED: "cancelled",
+}
+
+
+def build_error_envelope(error: CliError, args: Optional[argparse.Namespace]) -> Dict[str, Any]:
+    identity = "anonymous"
+    if args is not None:
+        token = str(getattr(args, "token", "") or "")
+        identity = "user" if token else "anonymous"
+    err: Dict[str, Any] = {
+        "type": error.error_type or ERROR_TYPE_BY_EXIT.get(error.exit_code, "error"),
+        "code": error.error_code if error.error_code is not None else error.exit_code,
+        "message": str(error),
+    }
+    if error.hint:
+        err["hint"] = error.hint
+    if error.detail is not None:
+        err["detail"] = error.detail
+    return {
+        "ok": False,
+        "identity": identity,
+        "error": err,
+    }
+
+
+def error_output_uses_envelope(args: Optional[argparse.Namespace]) -> bool:
+    if args is None:
+        return not sys.stderr.isatty()
+    if bool(getattr(args, "plain", False)):
+        return False
+    if bool(getattr(args, "json", False)):
+        return True
+    fmt = str(getattr(args, "format", "") or "").strip().lower()
+    if fmt in {"json", "table", "csv", "ndjson"}:
+        return True
+    return not sys.stderr.isatty()
+
+
+def emit_cli_error(error: CliError, args: Optional[argparse.Namespace]) -> None:
+    if error_output_uses_envelope(args):
+        print(json.dumps(build_error_envelope(error, args), ensure_ascii=False, indent=2), file=sys.stderr)
+        return
+    _eprint(str(error))
+
+
+def normalize_course_item(course: Dict[str, Any]) -> Dict[str, Any]:
+    category = {
+        "id": safe_int(course.get("categoryid")),
+        "name": str(course.get("categoryname") or ""),
+        "path": str(course.get("categorypath") or ""),
+        "display_path": str(course.get("categorydisplaypath") or ""),
+        "path_names": list(course.get("categorypathnames") or []),
+    }
+    semantic = dict(course.get("semantic") or {})
+    module_stats = [
+        {
+            "type": str(item.get("modname") or ""),
+            "count": safe_int(item.get("count")),
+        }
+        for item in list(semantic.get("module_stats") or [])
+    ]
+    learning = {
+        "course_type": str(semantic.get("course_type") or ""),
+        "learning_mode": str(semantic.get("learning_mode") or ""),
+        "agent_strategy": str(semantic.get("agent_strategy") or ""),
+        "confidence": str(semantic.get("confidence") or ""),
+        "reasons": list(semantic.get("reasons") or []),
+    }
+    item: Dict[str, Any] = {
+        "resource_type": "course",
+        "id": safe_int(course.get("id")),
+        "title": str(course.get("fullname") or ""),
+        "code": str(course.get("shortname") or ""),
+        "format": str(course.get("format") or ""),
+        "language": str(course.get("lang") or ""),
+        "category": category,
+        "completion_enabled": coerce_bool(course.get("enablecompletion")),
+        "learning": learning,
+        "module_stats": module_stats,
+    }
+    if "visible" in course or "startdate" in course or "enddate" in course:
+        item["availability"] = {
+            "visible": coerce_bool(course.get("visible")),
+            "start_at": iso_from_unix(course.get("startdate")),
+            "end_at": iso_from_unix(course.get("enddate")),
+        }
+    return item
+
+
+def normalize_course_module(module: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "resource_type": "module",
+        "id": safe_int(module.get("cmid")),
+        "instance_id": safe_int(module.get("instance")),
+        "kind": str(module.get("modname") or ""),
+        "title": str(module.get("name") or ""),
+        "visible": coerce_bool(module.get("uservisible", module.get("visible"))),
+        "url": str(module.get("url") or ""),
+    }
+
+
+def normalize_course_section(section: Dict[str, Any]) -> Dict[str, Any]:
+    modules = [normalize_course_module(item) for item in list(section.get("modules") or [])]
+    return {
+        "resource_type": "section",
+        "id": safe_int(section.get("id")),
+        "index": safe_int(section.get("sectionnum")),
+        "title": str(section.get("name") or ""),
+        "summary": str(section.get("summary") or ""),
+        "module_count": len(modules),
+        "modules": modules,
+    }
+
+
+def normalize_activity_item(activity: Dict[str, Any], *, resource_type: str = "activity") -> Dict[str, Any]:
+    return {
+        "resource_type": resource_type,
+        "id": safe_int(activity.get("cmid")),
+        "instance_id": safe_int(activity.get("instance")),
+        "kind": str(activity.get("modname") or ""),
+        "title": str(activity.get("name") or ""),
+        "section": safe_int(activity.get("sectionnum")),
+        "visible": coerce_bool(activity.get("visible", activity.get("uservisible"))),
+        "url": str(activity.get("url") or ""),
+        "external_url": str(activity.get("externalurl") or ""),
+        "summary": compact_text(activity.get("summaryhtml"), limit=120),
+        "open_at": iso_from_unix(activity.get("openfrom")),
+        "due_at": iso_from_unix(activity.get("dueto")),
+        "completion_expected_at": iso_from_unix(activity.get("completionexpected")),
+    }
+
+
+def normalize_quiz_item(quiz: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "resource_type": "quiz",
+        "id": safe_int(quiz.get("quizid")),
+        "activity_id": safe_int(quiz.get("cmid")),
+        "title": str(quiz.get("name") or ""),
+        "section": safe_int(quiz.get("sectionnum")),
+        "visible": coerce_bool(quiz.get("visible")),
+        "url": str(quiz.get("url") or ""),
+    }
+
+
+def normalize_due_activity_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "resource_type": "activity_due",
+        "id": safe_int(item.get("cmid")),
+        "instance_id": safe_int(item.get("instance")),
+        "kind": str(item.get("modname") or ""),
+        "title": str(item.get("name") or ""),
+        "course_id": safe_int(item.get("courseid")),
+        "course_code": str(item.get("courseshortname") or ""),
+        "course_title": str(item.get("coursefullname") or ""),
+        "due_type": str(item.get("duetype") or ""),
+        "due_at": iso_from_unix(item.get("duetime")),
+        "is_overdue": coerce_bool(item.get("overdue")),
+        "url": str(item.get("url") or ""),
+    }
+
+
+def normalize_assignment_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "resource_type": "assignment",
+        "id": safe_int(item.get("assignid")),
+        "activity_id": safe_int(item.get("cmid")),
+        "title": str(item.get("name") or ""),
+        "section": safe_int(item.get("sectionnum")),
+        "visible": coerce_bool(item.get("visible")),
+        "url": str(item.get("url") or ""),
+        "open_at": iso_from_unix(item.get("allowsubmissionsfromdate")),
+        "due_at": iso_from_unix(item.get("duedate")),
+        "cutoff_at": iso_from_unix(item.get("cutoffdate")),
+        "grading_due_at": iso_from_unix(item.get("gradingduedate")),
+        "always_show_description": coerce_bool(item.get("alwaysshowdescription")),
+        "team_submission": coerce_bool(item.get("teamsubmission")),
+        "draft_enabled": coerce_bool(item.get("submissiondrafts")),
+    }
+
+
+def normalize_assignment_status_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "resource_type": "assignment_status",
+        "id": safe_int(item.get("assignid")),
+        "activity_id": safe_int(item.get("cmid")),
+        "course_id": safe_int(item.get("courseid")),
+        "course_code": str(item.get("courseshortname") or ""),
+        "title": str(item.get("name") or ""),
+        "window_status": str(item.get("windowstatus") or ""),
+        "submission_status": str(item.get("submissionstatus") or ""),
+        "submitted_at": iso_from_unix(item.get("submittedat")),
+        "updated_at": iso_from_unix(item.get("timemodified")),
+        "attempt": safe_int(item.get("attemptnumber")),
+        "open_at": iso_from_unix(item.get("allowsubmissionsfromdate")),
+        "due_at": iso_from_unix(item.get("duedate")),
+        "cutoff_at": iso_from_unix(item.get("cutoffdate")),
+        "grading_due_at": iso_from_unix(item.get("gradingduedate")),
+        "is_overdue": coerce_bool(item.get("isoverdue")),
+        "is_graded": coerce_bool(item.get("isgraded")),
+        "grade": item.get("grade"),
+        "max_grade": item.get("maxgrade"),
+        "url": str(item.get("url") or ""),
+    }
+
+
+def normalize_calendar_event_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    start_at = iso_from_unix(item.get("timestart"))
+    duration = safe_int(item.get("timeduration"))
+    end_at = ""
+    if start_at and duration > 0:
+        end_at = iso_from_unix(safe_int(item.get("timestart")) + duration)
+    return {
+        "resource_type": "calendar_event",
+        "id": safe_int(item.get("id")),
+        "title": str(item.get("name") or ""),
+        "event_type": str(item.get("eventtype") or ""),
+        "start_at": start_at,
+        "end_at": end_at,
+        "duration_seconds": duration,
+        "course_id": safe_int(item.get("courseid")),
+        "group_id": safe_int(item.get("groupid")),
+        "user_id": safe_int(item.get("userid")),
+        "visible": coerce_bool(item.get("visible")),
+        "url": str(item.get("url") or ""),
+    }
+
+
+def normalize_forum_discussion_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "resource_type": "forum_discussion",
+        "id": safe_int(item.get("discussionid")),
+        "post_id": safe_int(item.get("postid")),
+        "course_id": safe_int(item.get("courseid")),
+        "course_code": str(item.get("courseshortname") or ""),
+        "forum_id": safe_int(item.get("forumid")),
+        "forum_title": str(item.get("forumname") or ""),
+        "title": str(item.get("subject") or ""),
+        "author": str(item.get("userfullname") or ""),
+        "created_at": iso_from_unix(item.get("created")),
+        "updated_at": iso_from_unix(item.get("timemodified") or item.get("modified")),
+        "replies": safe_int(item.get("numreplies")),
+        "unread": safe_int(item.get("numunread")),
+        "pinned": coerce_bool(item.get("pinned")),
+        "locked": coerce_bool(item.get("locked")),
+        "can_reply": coerce_bool(item.get("canreply")),
+        "url": str(item.get("url") or ""),
+    }
+
+
+def normalize_notification_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "resource_type": "notification",
+        "id": safe_int(item.get("id")),
+        "from_user_id": safe_int(item.get("useridfrom")),
+        "to_user_id": safe_int(item.get("useridto")),
+        "title": str(item.get("subject") or ""),
+        "summary": compact_text(item.get("smallmessage"), limit=120),
+        "message": compact_text(item.get("fullmessage"), limit=200),
+        "component": str(item.get("component") or ""),
+        "event_type": str(item.get("eventtype") or ""),
+        "created_at": iso_from_unix(item.get("timecreated")),
+        "read_at": iso_from_unix(item.get("timeread")),
+        "is_read": coerce_bool(item.get("read")),
+    }
+
+
+def normalize_question_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "resource_type": "question",
+        "id": safe_int(item.get("id")),
+        "title": str(item.get("name") or ""),
+        "kind": str(item.get("qtype") or ""),
+        "category_id": safe_int(item.get("categoryid")),
+        "category_name": str(item.get("categoryname") or ""),
+        "default_mark": item.get("defaultmark"),
+        "created_at": iso_from_unix(item.get("timecreated")),
+        "updated_at": iso_from_unix(item.get("timemodified")),
+    }
+
+
+def normalize_activity_detail_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = normalize_activity_item(item, resource_type="activity")
+    normalized["content"] = {
+        "summary_html": str(item.get("summaryhtml") or ""),
+        "content_html": str(item.get("contenthtml") or ""),
+    }
+    return normalized
+
+
+def normalize_quiz_attempt_entry(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "attempt_id": safe_int(item.get("attemptid")),
+        "number": safe_int(item.get("attempt")),
+        "state": str(item.get("state") or ""),
+        "started_at": iso_from_unix(item.get("timestart")),
+        "finished_at": iso_from_unix(item.get("timefinish")),
+        "sum_grades": item.get("sumgrades"),
+    }
+
+
+def normalize_quiz_attempts_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    attempts = [normalize_quiz_attempt_entry(entry) for entry in list(item.get("attempts") or [])]
+    return {
+        "resource_type": "quiz_attempt_group",
+        "id": safe_int(item.get("quizid")),
+        "activity_id": safe_int(item.get("cmid")),
+        "course_id": safe_int(item.get("courseid")),
+        "course_code": str(item.get("courseshortname") or ""),
+        "title": str(item.get("name") or ""),
+        "open_at": iso_from_unix(item.get("timeopen")),
+        "close_at": iso_from_unix(item.get("timeclose")),
+        "attempts_allowed": safe_int(item.get("attemptsallowed")),
+        "attempts_made": safe_int(item.get("attemptsmade")),
+        "attempts_left": safe_int(item.get("attemptsleft")),
+        "best_grade": item.get("bestgrade"),
+        "max_grade": item.get("grademax"),
+        "has_unfinished": coerce_bool(item.get("hasunfinished")),
+        "url": str(item.get("url") or ""),
+        "attempt_count": len(attempts),
+        "attempts": attempts,
+    }
+
+
+def normalize_grade_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "resource_type": "grade_item",
+        "id": safe_int(item.get("itemid")),
+        "title": str(item.get("itemname") or ""),
+        "item_type": str(item.get("itemtype") or ""),
+        "module": str(item.get("itemmodule") or ""),
+        "instance_id": safe_int(item.get("iteminstance")),
+        "grade": item.get("grade"),
+        "grade_min": item.get("grademin"),
+        "grade_max": item.get("grademax"),
+        "percentage": item.get("percentage"),
+        "feedback": compact_text(item.get("feedback"), limit=160),
+        "graded_at": iso_from_unix(item.get("dategraded")),
+    }
+
+
+def normalize_grade_course_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    grade_items = [normalize_grade_item(entry) for entry in list(item.get("items") or [])]
+    return {
+        "resource_type": "grade_course",
+        "id": safe_int(item.get("courseid")),
+        "code": str(item.get("courseshortname") or ""),
+        "title": str(item.get("coursefullname") or ""),
+        "course_grade": item.get("coursegrade"),
+        "grade_min": item.get("grademin"),
+        "grade_max": item.get("grademax"),
+        "graded_items_count": len(grade_items),
+        "items": grade_items,
+    }
+
+
+def normalize_progress_status_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "resource_type": "progress_status",
+        "id": safe_int(item.get("cmid")),
+        "kind": str(item.get("modname") or ""),
+        "instance_id": safe_int(item.get("instance")),
+        "state": safe_int(item.get("state")),
+        "completed_at": iso_from_unix(item.get("timecompleted")),
+        "tracking": safe_int(item.get("tracking")),
+        "is_overall_complete": coerce_bool(item.get("isoverallcomplete")),
+        "visible": coerce_bool(item.get("uservisible")),
+    }
+
+
+def normalize_progress_course_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    statuses = [normalize_progress_status_item(entry) for entry in list(item.get("statuses") or [])]
+    return {
+        "resource_type": "progress_course",
+        "id": safe_int(item.get("courseid")),
+        "code": str(item.get("courseshortname") or ""),
+        "title": str(item.get("coursefullname") or ""),
+        "completion_enabled": coerce_bool(item.get("completionenabled")),
+        "progress_percent": item.get("progresspercent"),
+        "completed_count": safe_int(item.get("completedcount")),
+        "total_count": safe_int(item.get("totalcount")),
+        "statuses": statuses,
+    }
+
+
+def summarize_outline_modules(sections: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    counts: Dict[str, int] = {}
+    for section in sections:
+        for module in list(section.get("modules") or []):
+            kind = str(module.get("kind") or "")
+            if not kind:
+                continue
+            counts[kind] = counts.get(kind, 0) + 1
+    stats = [{"type": kind, "count": count} for kind, count in sorted(counts.items())]
+    stats.sort(key=lambda item: (-item["count"], item["type"]))
+    return stats
+
+
+def build_course_route(course: Dict[str, Any], sections: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    learning = dict(course.get("learning") or {})
+    course_type = str(learning.get("course_type") or "")
+    strategy = str(learning.get("agent_strategy") or "")
+    first_nonempty_section = next((section for section in sections if section.get("modules")), None)
+    first_section_index = safe_int(first_nonempty_section.get("index")) if first_nonempty_section else 0
+    notes: List[str] = []
+    if course_type == "question_bank":
+        notes.append("Start from quizzes and question-bank modules before reading support materials.")
+    elif course_type == "video_course":
+        notes.append("Start from lesson-style page/resource modules and consume content in section order.")
+    elif course_type == "trial_course":
+        notes.append("Treat this as a preview course and focus on low-friction introductory content.")
+    elif course_type == "mixed_course":
+        notes.append("Alternate between lesson modules and practice modules rather than using a single path.")
+    else:
+        notes.append("Use section order as the default navigation path.")
+    return {
+        "strategy": strategy,
+        "entry_section": first_section_index,
+        "notes": notes,
+    }
+
+
+def transform_courses_list_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    courses = [normalize_course_item(item) for item in list(raw_data.get("courses") or [])]
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"courses": courses}, "courses"),
+        meta={
+            "count": len(courses),
+            "primary_resource": "courses",
+        },
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_courses_outline_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    course = normalize_course_item(dict(raw_data.get("course") or {}))
+    sections = [normalize_course_section(item) for item in list(raw_data.get("sections") or [])]
+    module_stats = summarize_outline_modules(sections)
+    module_count = sum(item.get("module_count", 0) for item in sections)
+    outline = {
+        "sections": sections,
+        "content_summary": {
+            "section_count": len(sections),
+            "module_count": module_count,
+            "module_stats": module_stats,
+        },
+        "route": build_course_route(course, sections),
+    }
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({
+            "course": course,
+            "outline": outline,
+            "sections": sections,
+        }, "sections"),
+        meta={
+            "section_count": len(sections),
+            "module_count": module_count,
+            "primary_resource": "outline",
+        },
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_activities_list_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    course = normalize_course_item(dict(raw_data.get("course") or {}))
+    activities = [normalize_activity_item(item, resource_type="activity") for item in list(raw_data.get("activities") or [])]
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"course": course, "activities": activities}, "activities"),
+        meta={"count": len(activities), "primary_resource": "activities"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_resources_list_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    course = normalize_course_item(dict(raw_data.get("course") or {}))
+    resources = [normalize_activity_item(item, resource_type="resource") for item in list(raw_data.get("resources") or [])]
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"course": course, "resources": resources}, "resources"),
+        meta={"count": len(resources), "primary_resource": "resources"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_quiz_list_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    course = normalize_course_item(dict(raw_data.get("course") or {}))
+    quizzes = [normalize_quiz_item(item) for item in list(raw_data.get("quizzes") or [])]
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"course": course, "quizzes": quizzes}, "quizzes"),
+        meta={"count": len(quizzes), "primary_resource": "quizzes"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_course_command_output(value: Any, args: argparse.Namespace) -> Any:
+    if command_path_equals(args, ["courses", "list"]):
+        return transform_courses_list_result(value)
+    if command_path_equals(args, ["courses", "outline"]):
+        return transform_courses_outline_result(value)
+    if command_path_equals(args, ["activities", "list"]):
+        return transform_activities_list_result(value)
+    if command_path_equals(args, ["resources", "list"]):
+        return transform_resources_list_result(value)
+    if command_path_equals(args, ["quiz", "list"]):
+        return transform_quiz_list_result(value)
+    return value
+
+
+def transform_activities_due_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    items = [normalize_due_activity_item(item) for item in list(raw_data.get("items") or [])]
+    window = {
+        "start_at": iso_from_unix(raw_data.get("timestart")),
+        "end_at": iso_from_unix(raw_data.get("timeend")),
+    }
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"window": window, "items": items}, "items"),
+        meta={"count": len(items), "primary_resource": "activity_due_items"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_assignments_list_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    course = normalize_course_item(dict(raw_data.get("course") or {}))
+    assignments = [normalize_assignment_item(item) for item in list(raw_data.get("assignments") or [])]
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"course": course, "assignments": assignments}, "assignments"),
+        meta={"count": len(assignments), "primary_resource": "assignments"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_assignments_status_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    assignments = [normalize_assignment_status_item(item) for item in list(raw_data.get("assignments") or [])]
+    filters = {
+        "course_id": safe_int(raw_data.get("courseid")),
+        "assignment_id": safe_int(raw_data.get("assignid")),
+    }
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"filters": filters, "assignments": assignments}, "assignments"),
+        meta={"count": len(assignments), "primary_resource": "assignment_status"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_calendar_list_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    events = [normalize_calendar_event_item(item) for item in list(raw_data.get("events") or [])]
+    window = {
+        "start_at": iso_from_unix(raw_data.get("timestart")),
+        "end_at": iso_from_unix(raw_data.get("timeend")),
+    }
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"window": window, "events": events}, "events"),
+        meta={"count": len(events), "primary_resource": "calendar_events"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_forum_discussions_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    discussions = [normalize_forum_discussion_item(item) for item in list(raw_data.get("discussions") or [])]
+    filters = {
+        "course_id": safe_int(raw_data.get("courseid")),
+        "forum_id": safe_int(raw_data.get("forumid")),
+    }
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"filters": filters, "discussions": discussions}, "discussions"),
+        meta={"count": len(discussions), "primary_resource": "forum_discussions"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_notifications_list_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    notifications = [normalize_notification_item(item) for item in list(raw_data.get("notifications") or [])]
+    page = {
+        "offset": safe_int(raw_data.get("limitfrom")),
+        "limit": safe_int(raw_data.get("limitnum")),
+    }
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"page": page, "notifications": notifications}, "notifications"),
+        meta={"count": len(notifications), "primary_resource": "notifications"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_questions_search_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    questions = [normalize_question_item(item) for item in list(raw_data.get("questions") or [])]
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"questions": questions}, "questions"),
+        meta={"count": len(questions), "primary_resource": "questions"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_activities_detail_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    course = normalize_course_item(dict(raw_data.get("course") or {}))
+    activity = normalize_activity_detail_item(dict(raw_data.get("activity") or {}))
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"course": course, "activity": activity, "activities": [activity]}, "activities"),
+        meta={"count": 1, "primary_resource": "activity_detail"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_quiz_attempts_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    quizzes = [normalize_quiz_attempts_item(item) for item in list(raw_data.get("quizzes") or [])]
+    filters = {
+        "course_id": safe_int(raw_data.get("courseid")),
+        "quiz_id": safe_int(raw_data.get("quizid")),
+    }
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"filters": filters, "quizzes": quizzes}, "quizzes"),
+        meta={"count": len(quizzes), "primary_resource": "quiz_attempt_groups"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_grades_overview_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    courses = [normalize_grade_course_item(item) for item in list(raw_data.get("courses") or [])]
+    filters = {
+        "course_id": safe_int(raw_data.get("courseid")),
+    }
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"filters": filters, "courses": courses}, "courses"),
+        meta={"count": len(courses), "primary_resource": "grade_courses"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_progress_course_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    courses = [normalize_progress_course_item(item) for item in list(raw_data.get("courses") or [])]
+    filters = {
+        "course_id": safe_int(raw_data.get("courseid")),
+    }
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias({"filters": filters, "courses": courses}, "courses"),
+        meta={"count": len(courses), "primary_resource": "progress_courses"},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_extended_command_output(value: Any, args: argparse.Namespace) -> Any:
+    if command_path_equals(args, ["activities", "due"]):
+        return transform_activities_due_result(value)
+    if command_path_equals(args, ["assignments", "list"]):
+        return transform_assignments_list_result(value)
+    if command_path_equals(args, ["assignments", "status"]):
+        return transform_assignments_status_result(value)
+    if command_path_equals(args, ["calendar", "list"]):
+        return transform_calendar_list_result(value)
+    if command_path_equals(args, ["forum", "discussions"]):
+        return transform_forum_discussions_result(value)
+    if command_path_equals(args, ["notifications", "list"]):
+        return transform_notifications_list_result(value)
+    if command_path_equals(args, ["questions", "search"]):
+        return transform_questions_search_result(value)
+    if command_path_equals(args, ["activities", "detail"]):
+        return transform_activities_detail_result(value)
+    if command_path_equals(args, ["quiz", "attempts"]):
+        return transform_quiz_attempts_result(value)
+    if command_path_equals(args, ["grades", "overview"]):
+        return transform_grades_overview_result(value)
+    if command_path_equals(args, ["progress", "course"]):
+        return transform_progress_course_result(value)
+    return value
+
+
+def emit_ndjson_rows(rows: Sequence[Dict[str, Any]]) -> None:
+    for row in rows:
+        print(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+
+
+def emit_csv_rows(rows: Sequence[Dict[str, Any]]) -> None:
+    if not rows:
+        return
+    fieldnames = list(rows[0].keys())
+    writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: scalar_to_text(row.get(key)) for key in fieldnames})
+
+
+def emit_table_rows(rows: Sequence[Dict[str, Any]]) -> None:
+    if not rows:
+        print("(no data)")
+        return
+    columns = list(rows[0].keys())
+    widths = {
+        column: max(len(column), max(len(scalar_to_text(row.get(column))) for row in rows))
+        for column in columns
+    }
+    print("  ".join(column.ljust(widths[column]) for column in columns))
+    for row in rows:
+        print("  ".join(scalar_to_text(row.get(column)).ljust(widths[column]) for column in columns))
+
+
+def rows_from_generic_value(value: Any) -> List[Dict[str, Any]]:
+    if isinstance(value, list):
+        rows: List[Dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, dict):
+                rows.append({str(key): scalar_to_text(val) for key, val in item.items()})
+            else:
+                rows.append({"value": scalar_to_text(item)})
+        return rows
+    if isinstance(value, dict):
+        return [{str(key): scalar_to_text(val) for key, val in value.items()}]
+    return [{"value": scalar_to_text(value)}]
+
+
+def build_courses_list_rows(value: Dict[str, Any]) -> List[Dict[str, Any]]:
+    courses = list(((value.get("data") or {}).get("courses") or []))
+    rows: List[Dict[str, Any]] = []
+    for course in courses:
+        category = dict(course.get("category") or {})
+        learning = dict(course.get("learning") or {})
+        rows.append({
+            "id": safe_int(course.get("id")),
+            "title": str(course.get("title") or ""),
+            "category": str(category.get("display_path") or category.get("name") or ""),
+            "course_type": str(learning.get("course_type") or ""),
+            "mode": str(learning.get("learning_mode") or ""),
+            "strategy": str(learning.get("agent_strategy") or ""),
+            "confidence": str(learning.get("confidence") or ""),
+            "module_mix": top_module_mix(list(course.get("module_stats") or [])),
+        })
+    return rows
+
+
+def build_courses_outline_section_rows(value: Dict[str, Any]) -> List[Dict[str, Any]]:
+    outline = dict(((value.get("data") or {}).get("outline") or {}))
+    sections = list(outline.get("sections") or [])
+    rows: List[Dict[str, Any]] = []
+    for section in sections:
+        rows.append({
+            "section": safe_int(section.get("index")),
+            "title": str(section.get("title") or ""),
+            "modules": safe_int(section.get("module_count")),
+            "summary": compact_text(section.get("summary"), limit=80),
+        })
+    return rows
+
+
+def build_activities_rows(value: Dict[str, Any]) -> List[Dict[str, Any]]:
+    activities = list(((value.get("data") or {}).get("activities") or [])
+                      or ((value.get("data") or {}).get("resources") or [])
+                      or ((value.get("data") or {}).get("quizzes") or []))
+    rows: List[Dict[str, Any]] = []
+    for item in activities:
+        if str(item.get("resource_type") or "") == "quiz":
+            rows.append({
+                "id": safe_int(item.get("id")),
+                "title": str(item.get("title") or ""),
+                "section": safe_int(item.get("section")),
+                "visible": "yes" if coerce_bool(item.get("visible")) else "no",
+                "url": str(item.get("url") or ""),
+            })
+            continue
+        rows.append({
+            "id": safe_int(item.get("id")),
+            "kind": str(item.get("kind") or ""),
+            "title": str(item.get("title") or ""),
+            "section": safe_int(item.get("section")),
+            "visible": "yes" if coerce_bool(item.get("visible")) else "no",
+            "due_at": str(item.get("due_at") or ""),
+        })
+    return rows
+
+
+def emit_courses_list_pretty(value: Dict[str, Any]) -> None:
+    rows = build_courses_list_rows(value)
+    meta = dict(value.get("meta") or {})
+    print(f"Courses: {safe_int(meta.get('count'))}")
+    if rows:
+        print("")
+        emit_table_rows(rows)
+
+
+def emit_courses_outline_pretty(value: Dict[str, Any]) -> None:
+    data = dict(value.get("data") or {})
+    course = dict(data.get("course") or {})
+    outline = dict(data.get("outline") or {})
+    learning = dict(course.get("learning") or {})
+    category = dict(course.get("category") or {})
+    route = dict(outline.get("route") or {})
+    summary = dict(outline.get("content_summary") or {})
+
+    print(str(course.get("title") or ""))
+    if course.get("code"):
+        print(f"Code: {course.get('code')}")
+    if category.get("display_path") or category.get("name"):
+        print(f"Category: {category.get('display_path') or category.get('name')}")
+    print(
+        "Type: {course_type} | Mode: {mode} | Strategy: {strategy} | Confidence: {confidence}".format(
+            course_type=learning.get("course_type") or "",
+            mode=learning.get("learning_mode") or "",
+            strategy=learning.get("agent_strategy") or "",
+            confidence=learning.get("confidence") or "",
+        )
+    )
+    print(
+        "Sections: {sections} | Modules: {modules} | Mix: {mix}".format(
+            sections=safe_int(summary.get("section_count")),
+            modules=safe_int(summary.get("module_count")),
+            mix=top_module_mix(list(summary.get("module_stats") or [])),
+        )
+    )
+    if route.get("notes"):
+        print(f"Route: {route['notes'][0]}")
+    sections = list(outline.get("sections") or [])
+    if sections:
+        print("")
+    for section in sections:
+        title = str(section.get("title") or "").strip() or f"Section {safe_int(section.get('index'))}"
+        print(f"[{safe_int(section.get('index'))}] {title}")
+        summary_text = compact_text(section.get("summary"), limit=140)
+        if summary_text:
+            print(f"  {summary_text}")
+        for module in list(section.get("modules") or []):
+            print(f"  - {module.get('kind')} | {module.get('title')}")
+
+
+def emit_learning_list_pretty(value: Dict[str, Any], *, list_key: str, heading: str) -> None:
+    data = dict(value.get("data") or {})
+    meta = dict(value.get("meta") or {})
+    course = dict(data.get("course") or {})
+    print(f"{heading}: {safe_int(meta.get('count'))}")
+    if course.get("title"):
+        print(f"Course: {course.get('title')}")
+    rows = build_activities_rows(value)
+    if rows:
+        print("")
+        emit_table_rows(rows)
+
+
+def emit_course_output(value: Any, args: argparse.Namespace) -> bool:
+    supported = {
+        ("courses", "list"),
+        ("courses", "outline"),
+        ("activities", "list"),
+        ("resources", "list"),
+        ("quiz", "list"),
+    }
+    path_tuple = tuple(getattr(args, "command_path", []) or [])
+    if path_tuple not in supported:
+        return False
+    if not isinstance(value, dict):
+        return False
+    if args.json:
+        print(json.dumps(value, ensure_ascii=False, indent=2))
+        return True
+    if args.plain:
+        emit_plain(value)
+        return True
+
+    fmt = (getattr(args, "format", "") or "").strip().lower()
+    if fmt in {"", "pretty"}:
+        if command_path_equals(args, ["courses", "list"]):
+            emit_courses_list_pretty(value)
+            return True
+        if command_path_equals(args, ["courses", "outline"]):
+            emit_courses_outline_pretty(value)
+            return True
+        if command_path_equals(args, ["activities", "list"]):
+            emit_learning_list_pretty(value, list_key="activities", heading="Activities")
+            return True
+        if command_path_equals(args, ["resources", "list"]):
+            emit_learning_list_pretty(value, list_key="resources", heading="Resources")
+            return True
+        if command_path_equals(args, ["quiz", "list"]):
+            emit_learning_list_pretty(value, list_key="quizzes", heading="Quizzes")
+            return True
+    if fmt == "json":
+        print(json.dumps(value, ensure_ascii=False, indent=2))
+        return True
+    if fmt == "table":
+        items = extract_items_for_output(value)
+        rows = rows_from_generic_value(items if items is not None else unwrap_primary(value))
+        emit_table_rows(rows)
+        return True
+    if fmt == "csv":
+        items = extract_items_for_output(value)
+        rows = rows_from_generic_value(items if items is not None else unwrap_primary(value))
+        emit_csv_rows(rows)
+        return True
+    if fmt == "ndjson":
+        items = extract_items_for_output(value)
+        primary = items if items is not None else unwrap_primary(value)
+        if isinstance(primary, list):
+            if primary and all(isinstance(item, dict) for item in primary):
+                emit_ndjson_rows(list(primary))
+            else:
+                for item in primary:
+                    print(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+            return True
+        print(json.dumps(primary, ensure_ascii=False, separators=(",", ":")))
+        return True
+    raise CliError(f"unsupported --format {fmt!r} for learning commands", EXIT_USAGE)
+
+
 def transform_output(value: Any, args: argparse.Namespace) -> Any:
+    if tuple(getattr(args, "command_path", []) or []) in {
+        ("courses", "list"),
+        ("courses", "outline"),
+        ("activities", "list"),
+        ("resources", "list"),
+        ("quiz", "list"),
+    }:
+        value = transform_course_command_output(value, args)
+    if tuple(getattr(args, "command_path", []) or []) in {
+        ("activities", "due"),
+        ("activities", "detail"),
+        ("assignments", "list"),
+        ("assignments", "status"),
+        ("calendar", "list"),
+        ("forum", "discussions"),
+        ("notifications", "list"),
+        ("questions", "search"),
+        ("quiz", "attempts"),
+        ("grades", "overview"),
+        ("progress", "course"),
+    }:
+        value = transform_extended_command_output(value, args)
     if args.results_only:
         value = unwrap_primary(value)
     if args.select:
@@ -299,6 +1940,35 @@ def transform_output(value: Any, args: argparse.Namespace) -> Any:
 
 
 def emit_output(value: Any, args: argparse.Namespace) -> None:
+    if emit_course_output(value, args):
+        return
+    fmt = (getattr(args, "format", "") or "").strip().lower()
+    if fmt == "json":
+        print(json.dumps(value, ensure_ascii=False, indent=2))
+        return
+    if fmt == "pretty":
+        if isinstance(value, str):
+            print(value)
+        else:
+            print(json.dumps(value, ensure_ascii=False, indent=2))
+        return
+    if fmt == "table":
+        emit_table_rows(rows_from_generic_value(unwrap_primary(value)))
+        return
+    if fmt == "csv":
+        emit_csv_rows(rows_from_generic_value(unwrap_primary(value)))
+        return
+    if fmt == "ndjson":
+        primary = unwrap_primary(value)
+        if isinstance(primary, list):
+            if primary and all(isinstance(item, dict) for item in primary):
+                emit_ndjson_rows(list(primary))
+            else:
+                for item in primary:
+                    print(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+        else:
+            print(json.dumps(primary, ensure_ascii=False, separators=(",", ":")))
+        return
     if args.json:
         print(json.dumps(value, ensure_ascii=False, indent=2))
         return
@@ -857,6 +2527,394 @@ def command_exit_codes(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     }
 
 
+def command_config_list(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    config = args.cli_config
+    current_profile = str(config.get("current_profile") or "")
+    profiles = []
+    for name in sorted((config.get("profiles") or {}).keys()):
+        profile = get_profile(config, name)
+        profiles.append(summarize_profile(name, profile, is_current=(name == current_profile)))
+    return {
+        "config_dir": args.config_dir,
+        "config_path": args.config_path,
+        "current_profile": current_profile,
+        "profiles": profiles,
+    }
+
+
+def command_config_show(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    profile_name = resolve_target_profile(args)
+    profile = get_profile(args.cli_config, profile_name)
+    if not profile:
+        raise CliError(f'profile "{profile_name}" not found', EXIT_NOT_FOUND)
+    summary = summarize_profile(profile_name, profile, is_current=(args.cli_config.get("current_profile") == profile_name))
+    if args.show_token:
+        summary["token"] = resolve_profile_token(profile_name, profile)
+    return {
+        "config_dir": args.config_dir,
+        "config_path": args.config_path,
+        "current_profile": str(args.cli_config.get("current_profile") or ""),
+        "profile": summary,
+    }
+
+
+def command_config_init(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    profile_name = resolve_target_profile(args)
+    profile = dict(get_profile(args.cli_config, profile_name))
+    base_url = args.base_url or str(profile.get("base_url") or "")
+    if not base_url and sys.stdin.isatty() and not args.no_input:
+        base_url = prompt_text("Moodle base URL")
+    base_url = normalize_base_url(base_url)
+    if not base_url:
+        raise CliError("config init requires --base-url for a new profile", EXIT_USAGE)
+
+    service = args.service or str(profile.get("service") or DEFAULT_SERVICE_SHORTNAME)
+    profile.update({
+        "base_url": base_url,
+        "service": service,
+        "updated_at": utc_now_iso(),
+    })
+    set_profile(args.cli_config, profile_name, profile)
+    if args.activate or not args.cli_config.get("current_profile"):
+        args.cli_config["current_profile"] = profile_name
+    save_cli_config(args.config_dir, args.cli_config)
+    return {
+        "ok": True,
+        "config_dir": args.config_dir,
+        "config_path": args.config_path,
+        "current_profile": str(args.cli_config.get("current_profile") or ""),
+        "profile": summarize_profile(profile_name, profile, is_current=(args.cli_config.get("current_profile") == profile_name)),
+    }
+
+
+def command_config_use(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    profile_name = normalize_profile_name(args.profile_name)
+    profile = get_profile(args.cli_config, profile_name)
+    if not profile:
+        raise CliError(f'profile "{profile_name}" not found', EXIT_NOT_FOUND)
+    args.cli_config["current_profile"] = profile_name
+    save_cli_config(args.config_dir, args.cli_config)
+    return {
+        "ok": True,
+        "current_profile": profile_name,
+        "profile": summarize_profile(profile_name, profile, is_current=True),
+    }
+
+
+def command_config_delete(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    profile_name = normalize_profile_name(args.profile_name)
+    deleted = delete_profile(args.cli_config, profile_name)
+    if not deleted:
+        raise CliError(f'profile "{profile_name}" not found', EXIT_NOT_FOUND)
+    save_cli_config(args.config_dir, args.cli_config)
+    return {
+        "ok": True,
+        "deleted": True,
+        "profile": profile_name,
+        "current_profile": str(args.cli_config.get("current_profile") or ""),
+    }
+
+
+def command_auth_login(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    profile_name = resolve_target_profile(args)
+    profile = dict(get_profile(args.cli_config, profile_name))
+
+    base_url = normalize_base_url(args.base_url or str(profile.get("base_url") or ""))
+    if not base_url and sys.stdin.isatty() and not args.no_input:
+        base_url = normalize_base_url(prompt_text("Moodle base URL"))
+    if not base_url:
+        raise CliError("auth login requires --base-url or a configured profile base URL", EXIT_USAGE)
+
+    service = args.service or str(profile.get("service") or DEFAULT_SERVICE_SHORTNAME)
+    if args.device_code:
+        payload = wait_for_device_authorization(
+            base_url,
+            args.device_code,
+            interval=args.interval or 5,
+            expires_in=args.expires_in or 600,
+            timeout=args.timeout,
+        )
+        token = str(payload.get("access_token") or "")
+        verified = verify_profile_session(base_url, token, args.timeout)
+        return persist_login_result(
+            args,
+            profile_name,
+            profile,
+            base_url=base_url,
+            service=service,
+            token=token,
+            verified=verified,
+        )
+
+    password_requested = bool(args.username or args.password)
+    if password_requested:
+        username = (args.username or str(profile.get("username") or "")).strip()
+        if not username and sys.stdin.isatty() and not args.no_input:
+            username = prompt_text("Username")
+        if not username:
+            raise CliError("auth login requires --username", EXIT_USAGE)
+
+        password = args.password or ""
+        if not password and sys.stdin.isatty() and not args.no_input:
+            password = prompt_text("Password", secret=True)
+        if not password:
+            raise CliError("auth login requires --password in non-interactive mode", EXIT_USAGE)
+
+        token_response = request_login_token(base_url, username, password, service, args.timeout)
+        token = str(token_response.get("token") or "")
+        verified = verify_profile_session(base_url, token, args.timeout)
+        return persist_login_result(
+            args,
+            profile_name,
+            profile,
+            base_url=base_url,
+            service=service,
+            token=token,
+            verified=verified,
+        )
+
+    start = request_device_authorization(base_url, service, args.timeout)
+    verification_url = str(start.get("verification_uri_complete") or start.get("verification_uri") or "")
+    if args.no_wait:
+        return {
+            "ok": True,
+            "profile": profile_name,
+            "base_url": base_url,
+            "service": service,
+            "device_code": str(start.get("device_code") or ""),
+            "user_code": str(start.get("user_code") or ""),
+            "verification_url": verification_url,
+            "expires_in": int(start.get("expires_in") or 600),
+            "interval": int(start.get("interval") or 5),
+        }
+
+    browser_opened = False
+    if verification_url and not args.no_browser:
+        browser_opened = bool(webbrowser.open(verification_url))
+    if not args.json:
+        _eprint(f"Open this URL to approve CLI login: {verification_url}")
+        _eprint(f"User code: {start.get('user_code')}")
+        if browser_opened:
+            _eprint("Opened the browser for approval.")
+        _eprint("Waiting for browser approval...")
+
+    payload = wait_for_device_authorization(
+        base_url,
+        str(start.get("device_code") or ""),
+        interval=int(start.get("interval") or 5),
+        expires_in=int(start.get("expires_in") or 600),
+        timeout=args.timeout,
+    )
+    token = str(payload.get("access_token") or "")
+    verified = verify_profile_session(base_url, token, args.timeout)
+    result = persist_login_result(
+        args,
+        profile_name,
+        profile,
+        base_url=base_url,
+        service=service,
+        token=token,
+        verified=verified,
+    )
+    result["verification_url"] = verification_url
+    result["user_code"] = str(start.get("user_code") or "")
+    result["browser_opened"] = browser_opened
+    return result
+
+
+def command_auth_status(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    profile_name = resolve_target_profile(args)
+    profile = get_profile(args.cli_config, profile_name)
+    base_url = normalize_base_url(args.base_url or str(profile.get("base_url") or ""))
+    service = args.service or str(profile.get("service") or DEFAULT_SERVICE_SHORTNAME)
+    token = args.token or resolve_profile_token(profile_name, profile)
+    payload: Dict[str, Any] = {
+        "profile": summarize_profile(profile_name, profile, is_current=(args.cli_config.get("current_profile") == profile_name)),
+        "base_url": base_url,
+        "service": service,
+        "identity": "user" if token else "anonymous",
+        "logged_in": bool(token),
+        "verified": False,
+    }
+    if args.offline:
+        return payload
+    if not base_url or not token:
+        return payload
+    try:
+        verified = verify_profile_session(base_url, token, args.timeout)
+    except CliError as e:
+        payload["error"] = {
+            "message": str(e),
+            "exit_code": e.exit_code,
+        }
+        return payload
+    payload["verified"] = True
+    payload["user"] = verified.get("data", {}).get("user", {})
+    payload["context"] = verified.get("data", {}).get("context", {})
+    if profile:
+        updated = dict(profile)
+        updated["last_verified_at"] = utc_now_iso()
+        set_profile(args.cli_config, profile_name, updated)
+        save_cli_config(args.config_dir, args.cli_config)
+        payload["profile"] = summarize_profile(profile_name, updated, is_current=(args.cli_config.get("current_profile") == profile_name))
+    return payload
+
+
+def command_auth_logout(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    profile_name = resolve_target_profile(args)
+    profile = dict(get_profile(args.cli_config, profile_name))
+    if not profile:
+        raise CliError(f'profile "{profile_name}" not found', EXIT_NOT_FOUND)
+    profile = clear_profile_token(profile_name, profile)
+    for key in ("last_verified_at", "user_id", "full_name"):
+        profile.pop(key, None)
+    set_profile(args.cli_config, profile_name, profile)
+    save_cli_config(args.config_dir, args.cli_config)
+    return {
+        "ok": True,
+        "logged_out": True,
+        "profile": summarize_profile(profile_name, profile, is_current=(args.cli_config.get("current_profile") == profile_name)),
+    }
+
+
+def command_auth_list(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    current_profile = str(args.cli_config.get("current_profile") or "")
+    items: List[Dict[str, Any]] = []
+    for name in sorted((args.cli_config.get("profiles") or {}).keys()):
+        profile = get_profile(args.cli_config, name)
+        token = resolve_profile_token(name, profile)
+        if not token:
+            continue
+        item = summarize_profile(name, profile, is_current=(name == current_profile))
+        items.append(item)
+    return {
+        "current_profile": current_profile,
+        "profiles": items,
+    }
+
+
+def command_profile_list(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return command_config_list(cli, args)
+
+
+def command_profile_use(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return command_config_use(cli, args)
+
+
+def command_profile_add(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    args.activate = args.use
+    return command_config_init(cli, args)
+
+
+def command_profile_remove(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return command_config_delete(cli, args)
+
+
+def command_profile_rename(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    old_name = normalize_profile_name(args.old_name)
+    new_name = normalize_profile_name(args.new_name)
+    if old_name == new_name:
+        raise CliError("old and new profile names are the same", EXIT_USAGE)
+    profile = get_profile(args.cli_config, old_name)
+    if not profile:
+        raise CliError(f'profile "{old_name}" not found', EXIT_NOT_FOUND)
+    if get_profile(args.cli_config, new_name):
+        raise CliError(f'profile "{new_name}" already exists', EXIT_USAGE)
+    updated = dict(profile)
+    token = resolve_profile_token(old_name, updated)
+    updated = clear_profile_token(old_name, updated)
+    was_current = args.cli_config.get("current_profile") == old_name
+    if token:
+        updated, _ = store_profile_token(new_name, updated, token)
+    delete_profile(args.cli_config, old_name)
+    set_profile(args.cli_config, new_name, updated)
+    if was_current:
+        args.cli_config["current_profile"] = new_name
+    save_cli_config(args.config_dir, args.cli_config)
+    return {
+        "ok": True,
+        "old_name": old_name,
+        "new_name": new_name,
+        "profile": summarize_profile(new_name, updated, is_current=(args.cli_config.get("current_profile") == new_name)),
+    }
+
+
+def command_doctor(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    profile_name = args.profile
+    profile = get_profile(args.cli_config, profile_name)
+    checks: List[Dict[str, Any]] = []
+
+    def add(name: str, status: str, message: str, hint: str = "") -> None:
+        item = {"name": name, "status": status, "message": message}
+        if hint:
+            item["hint"] = hint
+        checks.append(item)
+
+    if os.path.exists(args.config_path):
+        add("config_file", "pass", f"config found at {args.config_path}")
+    else:
+        add("config_file", "warn", "config file not initialized", "run: moodle config init --name default --base-url <url> --activate")
+
+    if profile:
+        add("profile", "pass", f'profile "{profile_name}" loaded')
+    else:
+        add("profile", "fail", f'profile "{profile_name}" not found', "run: moodle config init --name <profile> --base-url <url>")
+        return {"ok": False, "profile": profile_name, "checks": checks}
+
+    base_url = normalize_base_url(args.base_url or str(profile.get("base_url") or ""))
+    if base_url:
+        add("base_url", "pass", base_url)
+    else:
+        add("base_url", "fail", "missing Moodle base URL", "set --base-url or run: moodle config init")
+
+    service = args.service or str(profile.get("service") or DEFAULT_SERVICE_SHORTNAME)
+    add("service", "pass", service)
+
+    token = args.token or resolve_profile_token(profile_name, profile)
+    if token:
+        add("token_local", "pass", f"token available via {str(profile.get('token_storage') or 'file')}")
+    else:
+        add("token_local", "fail", "no stored token", "run: moodle auth login")
+
+    if args.offline:
+        add("network", "skip", "skipped (--offline)")
+        return {"ok": all(item["status"] != "fail" for item in checks), "profile": profile_name, "checks": checks}
+
+    if base_url:
+        for name, url in [
+            ("site_root", f"{base_url}/"),
+            ("login_endpoint", f"{base_url}/login/token.php?appsitecheck=1"),
+            ("device_verify_page", f"{base_url}/local/aiagentapi/device_verify.php?user_code=PING"),
+            ("webservice_endpoint", f"{base_url}/webservice/rest/server.php"),
+        ]:
+            ok, detail = probe_url(url, args.timeout)
+            status = "pass" if ok else "warn"
+            hint = ""
+            httpstatus = parse_http_status(detail)
+            if httpstatus == 404:
+                status = "warn"
+                if name == "device_verify_page":
+                    hint = (
+                        "device/browser login page is missing on server; deploy "
+                        "public/local/aiagentapi/device_verify.php and run plugin upgrade"
+                    )
+                else:
+                    hint = "endpoint missing on server"
+            add(name, status, f"{url} -> {detail}", hint=hint)
+
+    if base_url and token:
+        try:
+            verified = verify_profile_session(base_url, token, args.timeout)
+            user = verified.get("data", {}).get("user", {})
+            add("token_verified", "pass", f"user {user.get('username') or user.get('userid')}")
+        except CliError as e:
+            add("token_verified", "fail", str(e), "run: moodle auth login")
+    else:
+        add("token_verified", "skip", "skipped (missing base_url or token)")
+
+    return {"ok": all(item["status"] != "fail" for item in checks), "profile": profile_name, "checks": checks}
+
+
 def _schema_type(action: argparse.Action) -> str:
     if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
         return "bool"
@@ -949,11 +3007,15 @@ class MoodleCLI:
 
 def add_root_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--env-file", default=".env.local", help="Local env file (default: .env.local)")
+    parser.add_argument("--config-dir", default="", help="CLI config directory (default: XDG or ~/.config/moodle-cli)")
+    parser.add_argument("--profile", default="", help="Profile name to use")
     parser.add_argument("--base-url", default="", help="Moodle base URL")
     parser.add_argument("--token", default="", help="Web service token")
+    parser.add_argument("--service", default="", help=f"External service shortname (default: {DEFAULT_SERVICE_SHORTNAME})")
     parser.add_argument("--enable-commands", default="", help="Comma-separated top-level allowlist")
     parser.add_argument("--json", action="store_true", help="Output JSON to stdout")
     parser.add_argument("--plain", action="store_true", help="Output stable parseable text")
+    parser.add_argument("--format", default="", help="Output format for supported commands: json|pretty|table|csv|ndjson")
     parser.add_argument("--results-only", action="store_true", help="Emit only the primary result")
     parser.add_argument("--select", default="", help="Select comma-separated fields in JSON mode")
     parser.add_argument("--dry-run", action="store_true", help="Do not make changes; preview request")
@@ -987,6 +3049,70 @@ def build_parser() -> argparse.ArgumentParser:
 
     exit_codes_parser = add_parser(subparsers, "exit-codes", description="Print stable exit codes", aliases=["exitcodes"])
     exit_codes_parser.set_defaults(handler=command_exit_codes, command_path=["exit-codes"])
+
+    doctor_parser = add_parser(subparsers, "doctor", description="Health check config, auth, and connectivity")
+    doctor_parser.add_argument("--offline", action="store_true", help="Skip network checks")
+    doctor_parser.set_defaults(handler=command_doctor, command_path=["doctor"])
+
+    config_parser = add_parser(subparsers, "config", description="CLI profile and config helpers")
+    config_sub = config_parser.add_subparsers(dest="_config_command")
+    config_list = add_parser(config_sub, "list", description="List configured profiles", aliases=["ls"])
+    config_list.set_defaults(handler=command_config_list, command_path=["config", "list"])
+    config_show = add_parser(config_sub, "show", description="Show one profile")
+    config_show.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current profile)")
+    config_show.add_argument("--show-token", action="store_true", help="Include the raw token in output")
+    config_show.set_defaults(handler=command_config_show, command_path=["config", "show"])
+    config_init = add_parser(config_sub, "init", description="Create or update a profile")
+    config_init.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    config_init.add_argument("--activate", action="store_true", help="Make this profile current")
+    config_init.set_defaults(handler=command_config_init, command_path=["config", "init"])
+    config_use = add_parser(config_sub, "use", description="Switch current profile")
+    config_use.add_argument("profile_name", help="Profile name to activate")
+    config_use.set_defaults(handler=command_config_use, command_path=["config", "use"])
+    config_delete = add_parser(config_sub, "delete", description="Delete a profile", aliases=["rm", "remove"])
+    config_delete.add_argument("profile_name", help="Profile name to delete")
+    config_delete.set_defaults(handler=command_config_delete, command_path=["config", "delete"])
+
+    auth_parser = add_parser(subparsers, "auth", description="Authenticate and manage tokens")
+    auth_sub = auth_parser.add_subparsers(dest="_auth_command")
+    auth_login = add_parser(auth_sub, "login", description="Login via browser/device flow or username/password")
+    auth_login.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    auth_login.add_argument("--username", default="", help="Moodle username")
+    auth_login.add_argument("--password", default="", help="Moodle password (omit to prompt interactively)")
+    auth_login.add_argument("--device-code", default="", help="Resume polling with an existing device code")
+    auth_login.add_argument("--expires-in", type=int, default=0, help="Device code lifetime when resuming polling")
+    auth_login.add_argument("--interval", type=int, default=0, help="Device poll interval when resuming polling")
+    auth_login.add_argument("--no-wait", action="store_true", help="Start browser/device login and return device code immediately")
+    auth_login.add_argument("--no-browser", action="store_true", help="Do not attempt to open the browser automatically")
+    auth_login.set_defaults(handler=command_auth_login, command_path=["auth", "login"])
+    auth_list = add_parser(auth_sub, "list", description="List logged-in profiles")
+    auth_list.set_defaults(handler=command_auth_list, command_path=["auth", "list"])
+    auth_status = add_parser(auth_sub, "status", description="Show current auth status")
+    auth_status.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    auth_status.add_argument("--offline", action="store_true", help="Do not verify against the server")
+    auth_status.set_defaults(handler=command_auth_status, command_path=["auth", "status"])
+    auth_logout = add_parser(auth_sub, "logout", description="Remove the stored token from a profile")
+    auth_logout.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    auth_logout.set_defaults(handler=command_auth_logout, command_path=["auth", "logout"])
+
+    profile_parser = add_parser(subparsers, "profile", description="Manage CLI profiles")
+    profile_sub = profile_parser.add_subparsers(dest="_profile_command")
+    profile_list = add_parser(profile_sub, "list", description="List profiles", aliases=["ls"])
+    profile_list.set_defaults(handler=command_profile_list, command_path=["profile", "list"])
+    profile_use = add_parser(profile_sub, "use", description="Switch current profile")
+    profile_use.add_argument("profile_name", help="Profile name to activate")
+    profile_use.set_defaults(handler=command_profile_use, command_path=["profile", "use"])
+    profile_add = add_parser(profile_sub, "add", description="Add a new profile")
+    profile_add.add_argument("--name", dest="profile_name", required=True, help="Profile name")
+    profile_add.add_argument("--use", action="store_true", help="Make the profile current after adding")
+    profile_add.set_defaults(handler=command_profile_add, command_path=["profile", "add"])
+    profile_remove = add_parser(profile_sub, "remove", description="Remove a profile", aliases=["rm", "delete"])
+    profile_remove.add_argument("profile_name", help="Profile name to remove")
+    profile_remove.set_defaults(handler=command_profile_remove, command_path=["profile", "remove"])
+    profile_rename = add_parser(profile_sub, "rename", description="Rename a profile")
+    profile_rename.add_argument("old_name", help="Existing profile name")
+    profile_rename.add_argument("new_name", help="New profile name")
+    profile_rename.set_defaults(handler=command_profile_rename, command_path=["profile", "rename"])
 
     whoami_parser = add_parser(subparsers, "whoami", description="Show current Moodle user context")
     whoami_parser.set_defaults(handler=command_context_get, command_path=["whoami"])
@@ -1235,15 +3361,55 @@ def build_parser() -> argparse.ArgumentParser:
 
 def apply_env_defaults(args: argparse.Namespace) -> argparse.Namespace:
     env = load_env_file(args.env_file)
+    args.config_dir = resolve_config_dir(args.config_dir, env)
+    args.config_path = config_path_for_dir(args.config_dir)
+    args.cli_config = load_cli_config(args.config_dir)
+
+    profile_name = (
+        args.profile
+        or env.get("MOODLE_CLI_PROFILE")
+        or os.environ.get("MOODLE_CLI_PROFILE", "")
+        or str(args.cli_config.get("current_profile") or "")
+        or DEFAULT_PROFILE_NAME
+    )
+    args.profile = normalize_profile_name(profile_name)
+    profile = get_profile(args.cli_config, args.profile)
+
     if not args.base_url:
-        args.base_url = env.get("MOODLE_CLI_BASE_URL") or env.get("MOODLE_BASE_URL") or os.environ.get("MOODLE_CLI_BASE_URL") or os.environ.get("MOODLE_BASE_URL", "")
+        args.base_url = (
+            str(profile.get("base_url") or "")
+            or env.get("MOODLE_CLI_BASE_URL")
+            or env.get("MOODLE_BASE_URL")
+            or os.environ.get("MOODLE_CLI_BASE_URL")
+            or os.environ.get("MOODLE_BASE_URL", "")
+        )
     if not args.token:
-        args.token = env.get("MOODLE_CLI_TOKEN") or env.get("MOODLE_WS_TOKEN") or os.environ.get("MOODLE_CLI_TOKEN") or os.environ.get("MOODLE_WS_TOKEN", "")
+        args.token = (
+            resolve_profile_token(args.profile, profile)
+            or env.get("MOODLE_CLI_TOKEN")
+            or env.get("MOODLE_WS_TOKEN")
+            or os.environ.get("MOODLE_CLI_TOKEN")
+            or os.environ.get("MOODLE_WS_TOKEN", "")
+        )
+    if not args.service:
+        args.service = (
+            str(profile.get("service") or "")
+            or env.get("MOODLE_CLI_SERVICE")
+            or os.environ.get("MOODLE_CLI_SERVICE", "")
+            or DEFAULT_SERVICE_SHORTNAME
+        )
     args.base_url = normalize_base_url(args.base_url) if args.base_url else ""
     if env_bool("MOODLE_CLI_AUTO_JSON") and not args.json and not args.plain and not sys.stdout.isatty():
         args.json = True
     if args.json and args.plain:
         raise CliError("cannot combine --json and --plain", EXIT_USAGE)
+    if args.format:
+        normalized_format = str(args.format).strip().lower()
+        if normalized_format not in {"json", "pretty", "table", "csv", "ndjson"}:
+            raise CliError("unsupported --format: use json, pretty, table, csv, or ndjson", EXIT_USAGE)
+        args.format = normalized_format
+        if args.json or args.plain:
+            raise CliError("cannot combine --format with --json or --plain", EXIT_USAGE)
     return args
 
 
@@ -1266,6 +3432,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     argv = list(argv or sys.argv[1:])
     argv = rewrite_desire_args(argv)
     parser = build_parser()
+    args: Optional[argparse.Namespace] = None
 
     try:
         args = parser.parse_args(argv)
@@ -1283,7 +3450,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _eprint("cancelled")
         return EXIT_CANCELLED
     except CliError as e:
-        _eprint(str(e))
+        emit_cli_error(e, args)
         return e.exit_code
 
 

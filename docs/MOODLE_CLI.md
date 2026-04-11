@@ -1,15 +1,14 @@
 # Moodle CLI
 
-This is the first local CLI wrapper for `/Users/wonder/Documents/moodle/public/local/aiagentapi`.
+Agent-facing CLI wrapper for `/Users/wonder/Documents/moodle/public/local/aiagentapi`.
 
-It follows the `gogcli` design direction:
+Design goals (aligned with Feishu/Lark-style CLI ergonomics):
 
-- strong root contract
-- JSON-first automation
+- strong root contract (`ok / identity / data / meta`)
+- JSON-first automation with stable exit codes
+- command allowlisting and schema export
 - `dry-run` for writes
-- command allowlisting
-- schema export
-- stable exit codes
+- predictable table/csv/ndjson rendering for list resources
 
 Important:
 
@@ -24,24 +23,44 @@ Important:
 
 ## Root flags
 
+- `--config-dir`
+- `--profile`
 - `--env-file`
 - `--base-url`
 - `--token`
+- `--service`
 - `--enable-commands`
 - `--json`
 - `--plain`
+- `--format`
 - `--results-only`
 - `--select`
 - `--dry-run`
 - `--force`
 - `--no-input`
+- `--verbose`
 - `--timeout`
 
 ## Available commands
 
 - `schema`
 - `exit-codes`
+- `doctor`
 - `agent exit-codes`
+- `config list`
+- `config show`
+- `config init`
+- `config use`
+- `config delete`
+- `auth login`
+- `auth list`
+- `auth status`
+- `auth logout`
+- `profile list`
+- `profile use`
+- `profile add`
+- `profile remove`
+- `profile rename`
 - `whoami`
 - `context get`
 - `catalog get`
@@ -80,7 +99,127 @@ Important:
 - `quiz resolve-random`
 - `calendar publish-plan`
 
+## Quick start (new computer)
+
+### 1) Initialize local profile
+
+```bash
+bin/moodle config init --name prod --base-url http://dzexam.cn --activate
+```
+
+### 2) Login (recommended: browser/device flow)
+
+```bash
+bin/moodle auth login --name prod
+```
+
+Non-interactive start + complete later:
+
+```bash
+bin/moodle auth login --name prod --no-wait
+```
+
+Username/password fallback:
+
+```bash
+bin/moodle auth login --name prod --username wonderhow --password '***'
+```
+
+### 3) Verify session
+
+```bash
+bin/moodle doctor
+bin/moodle --json auth status
+bin/moodle --json context get
+```
+
+## Output contract
+
+### Success envelope
+
+Most normalized read commands return:
+
+```json
+{
+  "ok": true,
+  "identity": "user",
+  "data": {},
+  "meta": {
+    "count": 0,
+    "primary_resource": "..."
+  }
+}
+```
+
+For list-oriented commands, `data.items` is provided as a generic array alias for agent consumption, while domain keys are preserved (`courses`, `activities`, `quizzes`, etc.).
+
+### Error envelope
+
+In machine modes (`--json`, `--format json|table|csv|ndjson`, or non-TTY stderr), errors are emitted as structured JSON:
+
+```json
+{
+  "ok": false,
+  "identity": "user",
+  "error": {
+    "type": "validation",
+    "code": 2,
+    "message": "..."
+  }
+}
+```
+
+### Normalized read coverage (current)
+
+The following commands currently use normalized resource output with `meta.primary_resource` and `data.items`:
+
+- `courses list`
+- `courses outline`
+- `activities list`
+- `activities due`
+- `activities detail`
+- `resources list`
+- `quiz list`
+- `quiz attempts`
+- `assignments list`
+- `assignments status`
+- `calendar list`
+- `forum discussions`
+- `notifications list`
+- `questions search`
+- `grades overview`
+- `progress course`
+
+## Format modes
+
+- `--json`: full envelope JSON
+- `--format pretty`: human-friendly summary text (for selected commands)
+- `--format table`: tabular view
+- `--format csv`: CSV output
+- `--format ndjson`: line-delimited JSON rows
+
+Examples:
+
+```bash
+bin/moodle --format table courses list
+bin/moodle --format ndjson activities due --course-id 108 --limit 20
+bin/moodle --format csv notifications list --limit 20
+```
+
+## Permission model
+
+- Authorization is enforced server-side by Moodle capability checks in `local_aiagentapi`.
+- CLI output normalization does not grant extra access.
+- Effective permissions are the same as the authenticated Moodle user token.
+
 ## Examples
+
+### Show config and auth state
+
+```bash
+bin/moodle config list
+bin/moodle --json auth status
+```
 
 ### Show current user
 
