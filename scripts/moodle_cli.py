@@ -352,6 +352,31 @@ def resolve_plan_items(args: argparse.Namespace) -> List[Dict[str, Any]]:
     return items
 
 
+def resolve_batch_items(args: argparse.Namespace, *, label: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    if getattr(args, "input", ""):
+        loaded = load_json_file(args.input)
+        if isinstance(loaded, dict) and isinstance(loaded.get("items"), list):
+            loaded = loaded["items"]
+        if not isinstance(loaded, list):
+            raise CliError("--input must contain a JSON array or an object with an 'items' array", EXIT_USAGE)
+        for item in loaded:
+            if not isinstance(item, dict):
+                raise CliError(f"{label} input items must be objects", EXIT_USAGE)
+            items.append(item)
+    for raw in getattr(args, "item_json", []) or []:
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise CliError(f"invalid --item-json payload: {e}", EXIT_USAGE) from e
+        if not isinstance(item, dict):
+            raise CliError("--item-json must decode to an object", EXIT_USAGE)
+        items.append(item)
+    if not items:
+        raise CliError(f"{label} requires --input or at least one --item-json", EXIT_USAGE)
+    return items
+
+
 def _pair_from_object(item: Any, flag_name: str) -> Dict[str, Any]:
     if not isinstance(item, dict):
         raise CliError(f"{flag_name} must decode to an object", EXIT_USAGE)
@@ -839,6 +864,49 @@ def command_progress_course(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     })
 
 
+def command_mathstate_kp_upsert(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_std_kp_upsert_batch", {
+        "items": resolve_batch_items(args, label="mathstate kp-upsert"),
+    })
+
+
+def command_mathstate_qtype_upsert(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_std_qtype_upsert_batch", {
+        "items": resolve_batch_items(args, label="mathstate qtype-upsert"),
+    })
+
+
+def command_mathstate_question_map_upsert(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_question_map_upsert_batch", {
+        "items": resolve_batch_items(args, label="mathstate question-map-upsert"),
+    })
+
+
+def command_mathstate_evidence_ingest(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_evidence_ingest_batch", {
+        "items": resolve_batch_items(args, label="mathstate evidence-ingest"),
+    })
+
+
+def command_mathstate_student_summary(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_student_summary", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "include_kp_states": args.include_kp_states,
+        "include_qtype_states": args.include_qtype_states,
+        "include_due_tasks": args.include_due_tasks,
+    })
+
+
+def command_mathstate_reviews_due(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_reviews_due", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "limit": args.limit,
+        "due_before": args.due_before,
+    })
+
+
 def command_exit_codes(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     return {
         "exit_codes": {
@@ -1229,6 +1297,47 @@ def build_parser() -> argparse.ArgumentParser:
     progress_course = add_parser(progress_sub, "course", description="Show my course progress")
     progress_course.add_argument("--course-id", type=int, default=0, help="Optional course id")
     progress_course.set_defaults(handler=command_progress_course, command_path=["progress", "course"])
+
+    mathstate_parser = add_parser(subparsers, "mathstate", description="Math learning state helpers")
+    mathstate_sub = mathstate_parser.add_subparsers(dest="_mathstate_command")
+
+    mathstate_kp = add_parser(mathstate_sub, "kp-upsert", description="Upsert standard knowledge-point records")
+    mathstate_kp.add_argument("--input", default="", help="JSON file path containing items array (or - for stdin)")
+    mathstate_kp.add_argument("--item-json", action="append", default=[], help="Inline JSON object for one knowledge-point item")
+    mathstate_kp.set_defaults(handler=command_mathstate_kp_upsert, command_path=["mathstate", "kp-upsert"])
+
+    mathstate_qtype = add_parser(mathstate_sub, "qtype-upsert", description="Upsert standard question-type records")
+    mathstate_qtype.add_argument("--input", default="", help="JSON file path containing items array (or - for stdin)")
+    mathstate_qtype.add_argument("--item-json", action="append", default=[], help="Inline JSON object for one question-type item")
+    mathstate_qtype.set_defaults(handler=command_mathstate_qtype_upsert, command_path=["mathstate", "qtype-upsert"])
+
+    mathstate_map = add_parser(mathstate_sub, "question-map-upsert", description="Upsert Moodle question mappings to qg/kg")
+    mathstate_map.add_argument("--input", default="", help="JSON file path containing items array (or - for stdin)")
+    mathstate_map.add_argument("--item-json", action="append", default=[], help="Inline JSON object for one mapping item")
+    mathstate_map.set_defaults(handler=command_mathstate_question_map_upsert, command_path=["mathstate", "question-map-upsert"])
+
+    mathstate_evidence = add_parser(mathstate_sub, "evidence-ingest", description="Ingest evidence and update mastery state")
+    mathstate_evidence.add_argument("--input", default="", help="JSON file path containing items array (or - for stdin)")
+    mathstate_evidence.add_argument("--item-json", action="append", default=[], help="Inline JSON object for one evidence item")
+    mathstate_evidence.set_defaults(handler=command_mathstate_evidence_ingest, command_path=["mathstate", "evidence-ingest"])
+
+    mathstate_summary = add_parser(mathstate_sub, "student-summary", description="Show one student's math mastery summary")
+    mathstate_summary.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_summary.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_summary.add_argument("--include-kp-states", action="store_true", default=True, help="Include knowledge-point states")
+    mathstate_summary.add_argument("--no-include-kp-states", action="store_false", dest="include_kp_states", help="Do not include knowledge-point states")
+    mathstate_summary.add_argument("--include-qtype-states", action="store_true", default=True, help="Include question-type states")
+    mathstate_summary.add_argument("--no-include-qtype-states", action="store_false", dest="include_qtype_states", help="Do not include question-type states")
+    mathstate_summary.add_argument("--include-due-tasks", action="store_true", default=True, help="Include due tasks")
+    mathstate_summary.add_argument("--no-include-due-tasks", action="store_false", dest="include_due_tasks", help="Do not include due tasks")
+    mathstate_summary.set_defaults(handler=command_mathstate_student_summary, command_path=["mathstate", "student-summary"])
+
+    mathstate_due = add_parser(mathstate_sub, "reviews-due", description="List due review tasks for a student")
+    mathstate_due.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_due.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_due.add_argument("--limit", type=int, default=50, help="Maximum tasks to return")
+    mathstate_due.add_argument("--due-before", type=int, default=0, help="Upper due timestamp, 0 means now")
+    mathstate_due.set_defaults(handler=command_mathstate_reviews_due, command_path=["mathstate", "reviews-due"])
 
     return parser
 
