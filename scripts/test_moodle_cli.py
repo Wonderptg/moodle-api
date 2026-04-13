@@ -15,6 +15,19 @@ sys.path.insert(0, os.path.dirname(__file__))
 import moodle_cli  # noqa: E402
 
 
+class FakeCLI:
+    def __init__(self, responses: dict[tuple[str, str], object]) -> None:
+        self.responses = responses
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def call(self, wsfunction: str, params: dict[str, object]) -> object:
+        self.calls.append((wsfunction, dict(params)))
+        key = (wsfunction, json.dumps(params, sort_keys=True, ensure_ascii=False))
+        if key not in self.responses:
+            raise AssertionError(f"unexpected call: {wsfunction} {params}")
+        return self.responses[key]
+
+
 class MoodleCliTests(unittest.TestCase):
     def test_rewrite_fields_alias(self) -> None:
         self.assertEqual(
@@ -37,11 +50,90 @@ class MoodleCliTests(unittest.TestCase):
         selected = moodle_cli.select_fields(value, ["data.plugin.component"])
         self.assertEqual(selected, {"data.plugin.component": "local_aiagentapi"})
 
+    def test_searchable_values_includes_summary_and_content(self) -> None:
+        resource = {
+            "title": "第1课",
+            "summary": "本课讲测试重点。",
+            "content": {
+                "summary_html": "<p>总结测试重点</p>",
+                "content_html": "<div>这是资源正文内容</div>",
+            },
+        }
+        values = moodle_cli.searchable_values(resource)
+        self.assertIn("summary", values)
+        self.assertIn("content.summary_html", values)
+        self.assertIn("content.content_html", values)
+
     def test_apply_env_defaults_accepts_format_flag(self) -> None:
         parser = moodle_cli.build_parser()
         args = parser.parse_args(["--format", "table", "courses", "list"])
         args = moodle_cli.apply_env_defaults(args)
         self.assertEqual(args.format, "table")
+
+    def test_resolve_offset_limit_rejects_invalid_values(self) -> None:
+        with self.assertRaises(moodle_cli.CliError):
+            moodle_cli.resolve_offset_limit(-1, 10)
+        with self.assertRaises(moodle_cli.CliError):
+            moodle_cli.resolve_offset_limit(0, 0)
+
+    def test_paginate_items_reports_has_more_and_next_offset(self) -> None:
+        items = [{"id": 1}, {"id": 2}, {"id": 3}]
+        page, meta = moodle_cli.paginate_items(items, offset=1, limit=1)
+        self.assertEqual(page, [{"id": 2}])
+        self.assertTrue(meta["has_more"])
+        self.assertEqual(meta["next_offset"], 2)
+        self.assertEqual(meta["total_count"], 3)
+
+    def test_resolve_list_offset_limit_rejects_negative_values(self) -> None:
+        with self.assertRaises(moodle_cli.CliError):
+            moodle_cli.resolve_list_offset_limit(-1, 0)
+        with self.assertRaises(moodle_cli.CliError):
+            moodle_cli.resolve_list_offset_limit(0, -2)
+
+    def test_paginate_items_optional_limit_supports_unbounded_mode(self) -> None:
+        items = [{"id": 1}, {"id": 2}, {"id": 3}]
+        page, meta = moodle_cli.paginate_items_optional_limit(items, offset=1, limit=0)
+        self.assertEqual(page, [{"id": 2}, {"id": 3}])
+        self.assertFalse(meta["has_more"])
+        self.assertIsNone(meta["next_offset"])
+        self.assertEqual(meta["total_count"], 3)
+
+    def test_resolve_batch_items_accepts_object_items_array(self) -> None:
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as handle:
+            json.dump({"items": [{"kg_id": "kp-1"}]}, handle, ensure_ascii=False)
+            path = handle.name
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        args = argparse.Namespace(input=path, item_json=[])
+        items = moodle_cli.resolve_batch_items(args, label="mathstate kp-upsert")
+        self.assertEqual(items, [{"kg_id": "kp-1"}])
+
+    def test_command_mathstate_student_summary_calls_ws(self) -> None:
+        params = {
+            "courseid": 3,
+            "userid": 8,
+            "include_kp_states": True,
+            "include_qtype_states": False,
+            "include_due_tasks": True,
+        }
+        response = {"ok": True, "data": {"userid": 8, "courseid": 3}}
+        cli = FakeCLI({
+            ("local_mathstate_student_summary", json.dumps(params, sort_keys=True, ensure_ascii=False)): response,
+        })
+        args = argparse.Namespace(
+            course_id=3,
+            user_id=8,
+            include_kp_states=True,
+            include_qtype_states=False,
+            include_due_tasks=True,
+        )
+        result = moodle_cli.command_mathstate_student_summary(cli, args)
+        self.assertEqual(result, response)
+
+    def test_build_parser_includes_mathstate_reviews_due(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["mathstate", "reviews-due", "--course-id", "3"])
+        self.assertEqual(args.command_path, ["mathstate", "reviews-due"])
+        self.assertEqual(args.limit, 50)
 
     def test_transform_courses_list_result_builds_lark_style_resource_objects(self) -> None:
         payload = {
@@ -245,6 +337,51 @@ class MoodleCliTests(unittest.TestCase):
         self.assertEqual(quiz["id"], 901)
         self.assertEqual(quiz["activity_id"], 902)
 
+    def test_transform_output_courses_list_applies_offset_pagination(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["courses", "list", "--limit", "1", "--offset", "1"])
+        args = moodle_cli.apply_env_defaults(args)
+        payload = {
+            "ok": True,
+            "data": {
+                "courses": [
+                    {"id": 1, "shortname": "c1", "fullname": "课程1"},
+                    {"id": 2, "shortname": "c2", "fullname": "课程2"},
+                    {"id": 3, "shortname": "c3", "fullname": "课程3"},
+                ]
+            },
+        }
+        transformed = moodle_cli.transform_output(payload, args)
+        self.assertEqual(transformed["meta"]["count"], 1)
+        self.assertEqual(transformed["meta"]["total_count"], 3)
+        self.assertEqual(transformed["meta"]["offset"], 1)
+        self.assertEqual(transformed["meta"]["limit"], 1)
+        self.assertTrue(transformed["meta"]["has_more"])
+        self.assertEqual(transformed["meta"]["next_offset"], 2)
+        self.assertEqual(transformed["data"]["courses"][0]["id"], 2)
+        self.assertEqual(len(transformed["data"]["items"]), 1)
+
+    def test_transform_output_assignments_list_unbounded_default_limit(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["assignments", "list", "--course-id", "21"])
+        args = moodle_cli.apply_env_defaults(args)
+        payload = {
+            "ok": True,
+            "data": {
+                "course": {"id": 21, "shortname": "c21", "fullname": "课程21"},
+                "assignments": [
+                    {"assignid": 401, "cmid": 301, "name": "作业A", "visible": True},
+                    {"assignid": 402, "cmid": 302, "name": "作业B", "visible": True},
+                ],
+            },
+        }
+        transformed = moodle_cli.transform_output(payload, args)
+        self.assertEqual(transformed["meta"]["count"], 2)
+        self.assertEqual(transformed["meta"]["total_count"], 2)
+        self.assertEqual(transformed["meta"]["limit"], 0)
+        self.assertFalse(transformed["meta"]["has_more"])
+        self.assertEqual(len(transformed["data"]["assignments"]), 2)
+
     def test_unwrap_primary_supports_feishu_style_envelope(self) -> None:
         payload = {
             "ok": True,
@@ -376,6 +513,10 @@ class MoodleCliTests(unittest.TestCase):
         }
         transformed = moodle_cli.transform_forum_discussions_result(payload)
         self.assertEqual(transformed["meta"]["count"], 1)
+        self.assertEqual(transformed["meta"]["offset"], 0)
+        self.assertEqual(transformed["meta"]["limit"], 20)
+        self.assertEqual(transformed["meta"]["total_count"], 1)
+        self.assertFalse(transformed["meta"]["has_more"])
         item = transformed["data"]["discussions"][0]
         self.assertEqual(item["resource_type"], "forum_discussion")
         self.assertEqual(item["id"], 888)
@@ -407,6 +548,10 @@ class MoodleCliTests(unittest.TestCase):
         }
         transformed = moodle_cli.transform_notifications_list_result(payload)
         self.assertEqual(transformed["meta"]["count"], 1)
+        self.assertEqual(transformed["meta"]["offset"], 0)
+        self.assertEqual(transformed["meta"]["limit"], 20)
+        self.assertEqual(transformed["meta"]["total_count"], 1)
+        self.assertFalse(transformed["meta"]["has_more"])
         item = transformed["data"]["notifications"][0]
         self.assertEqual(item["resource_type"], "notification")
         self.assertEqual(item["id"], 901)
@@ -433,6 +578,10 @@ class MoodleCliTests(unittest.TestCase):
         }
         transformed = moodle_cli.transform_questions_search_result(payload)
         self.assertEqual(transformed["meta"]["count"], 1)
+        self.assertEqual(transformed["meta"]["offset"], 0)
+        self.assertEqual(transformed["meta"]["limit"], 50)
+        self.assertEqual(transformed["meta"]["total_count"], 1)
+        self.assertFalse(transformed["meta"]["has_more"])
         question = transformed["data"]["questions"][0]
         self.assertEqual(question["resource_type"], "question")
         self.assertEqual(question["id"], 3001)
@@ -630,6 +779,50 @@ class MoodleCliTests(unittest.TestCase):
             moodle_cli.emit_cli_error(err, args)
         self.assertEqual(stderr.getvalue(), "simple error\n")
 
+    def test_emit_output_auth_login_no_wait_prints_verification_url(self) -> None:
+        args = argparse.Namespace(
+            command_path=["auth", "login"],
+            json=False,
+            plain=False,
+            format="",
+        )
+        payload = {
+            "ok": True,
+            "profile": "dzexam",
+            "device_code": "abc123",
+            "user_code": "WXYZ-1234",
+            "verification_url": "http://dzexam.cn/local/aiagentapi/device_verify.php?user_code=WXYZ-1234",
+            "expires_in": 600,
+            "interval": 5,
+        }
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout):
+            moodle_cli.emit_output(payload, args)
+        out = stdout.getvalue()
+        self.assertIn("Open this URL to approve CLI login:", out)
+        self.assertIn("device_verify.php?user_code=WXYZ-1234", out)
+        self.assertIn("Resume command: moodle auth login --device-code abc123 --name dzexam", out)
+
+    def test_emit_output_auth_login_success_prints_compact_status(self) -> None:
+        args = argparse.Namespace(
+            command_path=["auth", "login"],
+            json=False,
+            plain=False,
+            format="",
+        )
+        payload = {
+            "ok": True,
+            "profile": {"name": "dzexam"},
+            "user": {"username": "wonderhow"},
+        }
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout):
+            moodle_cli.emit_output(payload, args)
+        out = stdout.getvalue()
+        self.assertIn("Login completed.", out)
+        self.assertIn("Profile: dzexam", out)
+        self.assertIn("User: wonderhow", out)
+
     def test_parse_enabled_commands(self) -> None:
         parser = moodle_cli.build_parser()
         args = parser.parse_args(["--enable-commands=context", "context", "get"])
@@ -659,6 +852,17 @@ class MoodleCliTests(unittest.TestCase):
         self.assertIn("progress", names)
         self.assertIn("notifications", names)
         self.assertIn("questions", names)
+        self.assertIn("search", names)
+
+    def test_search_schema_contains_global_and_course(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["schema", "search"])
+        args = moodle_cli.apply_env_defaults(args)
+        cli = moodle_cli.MoodleCLI(parser=parser, args=args)
+        doc = moodle_cli.command_schema(cli, args)
+        names = [item["name"] for item in doc["command"]["subcommands"]]
+        self.assertIn("global", names)
+        self.assertIn("course", names)
 
     def test_questions_schema_contains_search(self) -> None:
         parser = moodle_cli.build_parser()
@@ -701,6 +905,7 @@ class MoodleCliTests(unittest.TestCase):
         doc = moodle_cli.command_schema(cli, args)
         names = [item["name"] for item in doc["command"]["subcommands"]]
         self.assertIn("due", names)
+        self.assertIn("get", names)
         self.assertIn("detail", names)
 
     def test_assignments_schema_contains_save_draft(self) -> None:
@@ -710,6 +915,7 @@ class MoodleCliTests(unittest.TestCase):
         cli = moodle_cli.MoodleCLI(parser=parser, args=args)
         doc = moodle_cli.command_schema(cli, args)
         names = [item["name"] for item in doc["command"]["subcommands"]]
+        self.assertIn("get", names)
         self.assertIn("save-draft", names)
         self.assertIn("submit-final", names)
 
@@ -720,12 +926,673 @@ class MoodleCliTests(unittest.TestCase):
         cli = moodle_cli.MoodleCLI(parser=parser, args=args)
         doc = moodle_cli.command_schema(cli, args)
         names = [item["name"] for item in doc["command"]["subcommands"]]
+        self.assertIn("get", names)
         self.assertIn("start", names)
         self.assertIn("attempt-data", names)
         self.assertIn("attempt-summary", names)
         self.assertIn("save-attempt", names)
         self.assertIn("submit-attempt", names)
         self.assertIn("answer", names)
+
+    def test_courses_schema_contains_get(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["schema", "courses"])
+        args = moodle_cli.apply_env_defaults(args)
+        cli = moodle_cli.MoodleCLI(parser=parser, args=args)
+        doc = moodle_cli.command_schema(cli, args)
+        names = [item["name"] for item in doc["command"]["subcommands"]]
+        self.assertIn("get", names)
+
+    def test_resources_schema_contains_get(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["schema", "resources"])
+        args = moodle_cli.apply_env_defaults(args)
+        cli = moodle_cli.MoodleCLI(parser=parser, args=args)
+        doc = moodle_cli.command_schema(cli, args)
+        names = [item["name"] for item in doc["command"]["subcommands"]]
+        self.assertIn("get", names)
+
+    def test_resources_fetch_alias_maps_to_get_command_path(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["resources", "fetch", "--course-id", "21", "--cmid", "701"])
+        args = moodle_cli.apply_env_defaults(args)
+        self.assertEqual(args.command_path, ["resources", "get"])
+
+    def test_command_search_course_aggregates_and_ranks_results(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args([
+            "search", "course",
+            "--course-id", "21",
+            "--query", "作业",
+            "--kind", "activity",
+            "--kind", "assignment",
+            "--limit", "10",
+        ])
+        args = moodle_cli.apply_env_defaults(args)
+
+        responses = {
+            (
+                "local_aiagentapi_course_get_outline",
+                json.dumps({"courseid": 21}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "sections": [],
+                },
+            },
+            (
+                "local_aiagentapi_activities_list_by_course",
+                json.dumps({"courseid": 21, "modname": ""}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "activities": [
+                        {
+                            "cmid": 501,
+                            "instance": 401,
+                            "modname": "assign",
+                            "name": "作业讲解",
+                            "sectionnum": 1,
+                            "visible": True,
+                            "url": "http://example.test/mod/assign/view.php?id=501",
+                        }
+                    ],
+                },
+            },
+            (
+                "local_aiagentapi_assignments_list_by_course",
+                json.dumps({"courseid": 21}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "assignments": [
+                        {
+                            "cmid": 301,
+                            "assignid": 401,
+                            "name": "作业A",
+                            "sectionnum": 2,
+                            "visible": True,
+                            "url": "http://example.test/mod/assign/view.php?id=301",
+                        }
+                    ],
+                },
+            },
+        }
+        result = moodle_cli.command_search_course(FakeCLI(responses), args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["scope"], "course")
+        self.assertEqual(result["meta"]["count"], 2)
+        self.assertEqual(result["meta"]["total_count"], 2)
+        self.assertEqual(result["meta"]["offset"], 0)
+        self.assertEqual(result["meta"]["limit"], 10)
+        self.assertFalse(result["meta"]["has_more"])
+        self.assertIsNone(result["meta"]["next_offset"])
+        self.assertEqual(result["data"]["results"][0]["title"], "作业A")
+        self.assertIn("matched_fields", result["data"]["results"][0])
+
+    def test_command_search_course_supports_offset_pagination(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args([
+            "search", "course",
+            "--course-id", "21",
+            "--query", "作业",
+            "--kind", "activity",
+            "--kind", "assignment",
+            "--limit", "1",
+            "--offset", "1",
+        ])
+        args = moodle_cli.apply_env_defaults(args)
+        responses = {
+            (
+                "local_aiagentapi_course_get_outline",
+                json.dumps({"courseid": 21}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "sections": [],
+                },
+            },
+            (
+                "local_aiagentapi_activities_list_by_course",
+                json.dumps({"courseid": 21, "modname": ""}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "activities": [
+                        {
+                            "cmid": 501,
+                            "instance": 401,
+                            "modname": "assign",
+                            "name": "作业讲解",
+                            "sectionnum": 1,
+                            "visible": True,
+                            "url": "http://example.test/mod/assign/view.php?id=501",
+                        }
+                    ],
+                },
+            },
+            (
+                "local_aiagentapi_assignments_list_by_course",
+                json.dumps({"courseid": 21}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "assignments": [
+                        {
+                            "cmid": 301,
+                            "assignid": 401,
+                            "name": "作业A",
+                            "sectionnum": 2,
+                            "visible": True,
+                            "url": "http://example.test/mod/assign/view.php?id=301",
+                        }
+                    ],
+                },
+            },
+        }
+        result = moodle_cli.command_search_course(FakeCLI(responses), args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["meta"]["count"], 1)
+        self.assertEqual(result["meta"]["total_count"], 2)
+        self.assertEqual(result["meta"]["offset"], 1)
+        self.assertEqual(result["meta"]["limit"], 1)
+        self.assertFalse(result["meta"]["has_more"])
+        self.assertIsNone(result["meta"]["next_offset"])
+        self.assertEqual(result["data"]["results"][0]["title"], "作业讲解")
+
+    def test_command_questions_search_applies_offset_window(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args([
+            "questions", "search",
+            "--query", "函数",
+            "--limit", "1",
+            "--offset", "1",
+        ])
+        args = moodle_cli.apply_env_defaults(args)
+        responses = {
+            (
+                "local_aiagentapi_questionbank_search",
+                json.dumps(
+                    {
+                        "query": "函数",
+                        "courseid": 0,
+                        "categoryid": 0,
+                        "recurse": False,
+                        "qtypes": [],
+                        "limit": 2,
+                    },
+                    sort_keys=True,
+                    ensure_ascii=False,
+                ),
+            ): {
+                "ok": True,
+                "data": {
+                    "questions": [
+                        {"id": 101, "name": "函数定义", "qtype": "shortanswer"},
+                        {"id": 102, "name": "函数单调性", "qtype": "multichoice"},
+                    ]
+                },
+            },
+        }
+        result = moodle_cli.command_questions_search(FakeCLI(responses), args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["data"]["questions"]), 1)
+        self.assertEqual(result["data"]["questions"][0]["id"], 102)
+        self.assertEqual(result["data"]["offset"], 1)
+        self.assertEqual(result["data"]["limit"], 1)
+        self.assertEqual(result["data"]["totalcount"], 2)
+        self.assertFalse(result["data"]["hasmore"])
+
+    def test_command_forum_discussions_applies_offset_window(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args([
+            "forum", "discussions",
+            "--course-id", "21",
+            "--limit", "1",
+            "--offset", "1",
+        ])
+        args = moodle_cli.apply_env_defaults(args)
+        responses = {
+            (
+                "local_aiagentapi_forum_discussions_list",
+                json.dumps({"courseid": 21, "forumid": 0, "limit": 2}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "courseid": 21,
+                    "forumid": 0,
+                    "discussions": [
+                        {"discussionid": 201, "postid": 301, "subject": "A"},
+                        {"discussionid": 202, "postid": 302, "subject": "B"},
+                    ],
+                },
+            },
+        }
+        result = moodle_cli.command_forum_discussions(FakeCLI(responses), args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["data"]["discussions"]), 1)
+        self.assertEqual(result["data"]["discussions"][0]["discussionid"], 202)
+        self.assertEqual(result["data"]["offset"], 1)
+        self.assertEqual(result["data"]["limit"], 1)
+        self.assertEqual(result["data"]["totalcount"], 2)
+        self.assertFalse(result["data"]["hasmore"])
+
+    def test_command_notifications_list_prefers_offset_alias(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args([
+            "notifications", "list",
+            "--limit-from", "3",
+            "--offset", "4",
+            "--limit", "2",
+        ])
+        args = moodle_cli.apply_env_defaults(args)
+        responses = {
+            (
+                "local_aiagentapi_notifications_list_my",
+                json.dumps({"limitfrom": 4, "limitnum": 2, "unreadonly": False}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "notifications": [
+                        {"id": 901, "subject": "提醒"},
+                    ]
+                },
+            },
+        }
+        result = moodle_cli.command_notifications_list(FakeCLI(responses), args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["offset"], 4)
+        self.assertEqual(result["data"]["limit"], 2)
+        self.assertFalse(result["data"]["hasmore"])
+        self.assertEqual(result["data"]["totalcount"], 5)
+
+    def test_command_resources_get_returns_single_resource_envelope(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["resources", "get", "--course-id", "21", "--cmid", "701", "--no-content"])
+        args = moodle_cli.apply_env_defaults(args)
+        responses = {
+            (
+                "local_aiagentapi_resources_list_by_course",
+                json.dumps({"courseid": 21}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "resources": [
+                        {
+                            "cmid": 701,
+                            "instance": 801,
+                            "modname": "resource",
+                            "name": "第一章讲义",
+                            "sectionnum": 1,
+                            "visible": True,
+                            "url": "http://example.test/mod/resource/view.php?id=701",
+                        }
+                    ],
+                },
+            },
+        }
+        result = moodle_cli.command_resources_get(FakeCLI(responses), args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["meta"]["count"], 1)
+        self.assertEqual(result["data"]["resource"]["id"], 701)
+        self.assertFalse(result["meta"]["content_included"])
+
+    def test_command_resources_get_merges_detail_content(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["resources", "get", "--course-id", "21", "--cmid", "701"])
+        args = moodle_cli.apply_env_defaults(args)
+        responses = {
+            (
+                "local_aiagentapi_resources_list_by_course",
+                json.dumps({"courseid": 21}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "resources": [
+                        {
+                            "cmid": 701,
+                            "instance": 801,
+                            "modname": "resource",
+                            "name": "第一章讲义",
+                            "sectionnum": 1,
+                            "visible": True,
+                            "url": "http://example.test/mod/resource/view.php?id=701",
+                        }
+                    ],
+                },
+            },
+            (
+                "local_aiagentapi_course_activity_detail",
+                json.dumps({"cmid": 701}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "activity": {
+                        "cmid": 701,
+                        "instance": 801,
+                        "modname": "resource",
+                        "name": "第一章讲义",
+                        "sectionnum": 1,
+                        "visible": True,
+                        "url": "http://example.test/mod/resource/view.php?id=701",
+                        "summaryhtml": "<p>章节总结</p>",
+                        "contenthtml": "<div>详细内容</div>",
+                    },
+                },
+            },
+        }
+        result = moodle_cli.command_resources_get(FakeCLI(responses), args)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["meta"]["content_included"])
+        self.assertEqual(result["data"]["resource"]["content"]["summary_html"], "<p>章节总结</p>")
+        self.assertEqual(result["data"]["resource"]["content"]["content_html"], "<div>详细内容</div>")
+
+    def test_command_resources_get_no_content_skips_detail_fetch(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["resources", "get", "--course-id", "21", "--cmid", "701", "--no-content"])
+        args = moodle_cli.apply_env_defaults(args)
+        responses = {
+            (
+                "local_aiagentapi_resources_list_by_course",
+                json.dumps({"courseid": 21}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "resources": [
+                        {
+                            "cmid": 701,
+                            "instance": 801,
+                            "modname": "resource",
+                            "name": "第一章讲义",
+                            "sectionnum": 1,
+                            "visible": True,
+                            "url": "http://example.test/mod/resource/view.php?id=701",
+                        }
+                    ],
+                },
+            },
+        }
+        fake = FakeCLI(responses)
+        result = moodle_cli.command_resources_get(fake, args)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["meta"]["content_included"])
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_command_assignments_get_merges_status(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["assignments", "get", "--course-id", "21", "--assign-id", "401"])
+        args = moodle_cli.apply_env_defaults(args)
+        responses = {
+            (
+                "local_aiagentapi_assignments_list_by_course",
+                json.dumps({"courseid": 21}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "assignments": [
+                        {
+                            "cmid": 301,
+                            "assignid": 401,
+                            "name": "作业A",
+                            "sectionnum": 2,
+                            "visible": True,
+                            "url": "http://example.test/mod/assign/view.php?id=301",
+                        }
+                    ],
+                },
+            },
+            (
+                "local_aiagentapi_assignments_my_status",
+                json.dumps({"courseid": 21, "assignid": 401}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "courseid": 21,
+                    "assignid": 401,
+                    "assignments": [
+                        {
+                            "assignid": 401,
+                            "cmid": 301,
+                            "courseid": 21,
+                            "courseshortname": "c21",
+                            "name": "作业A",
+                            "submissionstatus": "submitted",
+                            "windowstatus": "open",
+                            "isgraded": False,
+                            "isoverdue": False,
+                        }
+                    ],
+                },
+            },
+        }
+        result = moodle_cli.command_assignments_get(FakeCLI(responses), args)
+        self.assertEqual(result["data"]["assignment"]["submission_status"], "submitted")
+        self.assertIn("status", result["data"]["assignment"])
+
+    def test_command_quiz_get_merges_attempts(self) -> None:
+        parser = moodle_cli.build_parser()
+        args = parser.parse_args(["quiz", "get", "--course-id", "21", "--quiz-id", "901"])
+        args = moodle_cli.apply_env_defaults(args)
+        responses = {
+            (
+                "local_aiagentapi_quiz_list_by_course",
+                json.dumps({"courseid": 21}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "course": {
+                        "id": 21,
+                        "shortname": "c21",
+                        "fullname": "课程21",
+                        "categoryid": 1,
+                        "categoryname": "分类",
+                        "categorypath": "/1",
+                        "categorydisplaypath": "分类",
+                        "categorypathnames": ["分类"],
+                        "format": "topics",
+                        "lang": "zh_cn",
+                        "enablecompletion": True,
+                        "semantic": {},
+                    },
+                    "quizzes": [
+                        {
+                            "quizid": 901,
+                            "cmid": 902,
+                            "name": "阶段测验",
+                            "sectionnum": 3,
+                            "visible": True,
+                            "url": "http://example.test/mod/quiz/view.php?id=902",
+                        }
+                    ],
+                },
+            },
+            (
+                "local_aiagentapi_quiz_attempts_my",
+                json.dumps({"courseid": 21, "quizid": 901}, sort_keys=True, ensure_ascii=False),
+            ): {
+                "ok": True,
+                "data": {
+                    "courseid": 21,
+                    "quizid": 901,
+                    "quizzes": [
+                        {
+                            "courseid": 21,
+                            "courseshortname": "c21",
+                            "cmid": 902,
+                            "quizid": 901,
+                            "name": "阶段测验",
+                            "attemptsmade": 1,
+                            "attemptsleft": 2,
+                            "hasunfinished": False,
+                            "attempts": [
+                                {
+                                    "attemptid": 1001,
+                                    "attempt": 1,
+                                    "state": "finished",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            },
+        }
+        result = moodle_cli.command_quiz_get(FakeCLI(responses), args)
+        self.assertEqual(result["data"]["quiz"]["attempt_count"], 1)
+        self.assertEqual(result["data"]["quiz"]["attempts"][0]["attempt_id"], 1001)
 
     def test_forum_schema_contains_write_commands(self) -> None:
         parser = moodle_cli.build_parser()

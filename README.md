@@ -21,6 +21,8 @@ The current project can already do all of the following through the AI-friendly 
 - start quiz attempts, fetch attempt data, apply structured answers, submit attempts
 - query question banks, search questions, pick random questions, render question HTML
 - save assignment drafts, submit assignments, and interact with forums
+- sync math knowledge points / question types / question mappings
+- ingest math learning evidence and read student math mastery / due reviews
 - run against seeded demo data and also against a real upgraded Moodle clone
 
 We have also validated this on a real upgraded course copy:
@@ -160,6 +162,150 @@ Important:
 
 - `/Users/wonder/Documents/moodle/scripts/moodle_cli.py`
 - `/Users/wonder/Documents/moodle/bin/moodle`
+- Detailed guide: `/Users/wonder/Documents/moodle/docs/MOODLE_CLI.md`
+
+## CLI 快速使用（每天按这个流程走）
+
+统一入口命令：`bin/moodle`。
+
+### 1) 新机器首次配置
+
+```bash
+cd /Users/wonder/Documents/moodle
+bin/moodle config init --name prod --base-url http://dzexam.cn --activate
+```
+
+登录（推荐：浏览器/device flow）：
+
+```bash
+bin/moodle auth login --name prod
+```
+
+非阻塞启动（稍后在浏览器完成）：
+
+```bash
+bin/moodle auth login --name prod --no-wait
+```
+
+默认会直接打印授权链接（`verification_url`）和恢复命令，体验对齐飞书 device flow：
+
+```bash
+Open this URL to approve CLI login:
+http://dzexam.cn/local/aiagentapi/device_verify.php?user_code=XXXX-XXXX
+Resume command: moodle auth login --device-code <DEVICE_CODE> --name prod
+```
+
+账号密码兜底方式：
+
+```bash
+bin/moodle auth login --name prod --username wonderhow --password '***'
+```
+
+### 2) 验证登录状态
+
+```bash
+bin/moodle doctor
+bin/moodle --json auth status
+bin/moodle --json context get
+```
+
+### 3) 常用查询命令
+
+```bash
+bin/moodle --json courses list
+bin/moodle --json courses list --limit 20 --offset 20
+bin/moodle --json courses get --course-id 108
+bin/moodle --json courses outline --course-id 108
+bin/moodle --json search course --course-id 108 --query 测试 --limit 20
+bin/moodle --json search course --course-id 108 --query 测试 --limit 20 --offset 20
+bin/moodle --json search global --query 试听 --kind course --limit 20
+bin/moodle --json activities list --course-id 108
+bin/moodle --json activities get --cmid 7689
+bin/moodle --json resources list --course-id 103
+bin/moodle --json resources get --course-id 103 --cmid 7358
+bin/moodle --json assignments list --course-id 108
+bin/moodle --json assignments get --course-id 108 --assign-id 401
+bin/moodle --json questions search --course-id 108 --query 测试 --limit 20 --offset 20
+bin/moodle --json forum discussions --course-id 108 --limit 20 --offset 20
+bin/moodle --json notifications list --limit 20 --offset 20
+bin/moodle --json quiz list --course-id 108
+bin/moodle --json quiz get --course-id 108 --quiz-id 666
+bin/moodle --json grades overview --course-id 108
+bin/moodle --json progress course --course-id 108
+bin/moodle --json mathstate student-summary --course-id 108 --user-id 2
+bin/moodle --json mathstate reviews-due --course-id 108 --user-id 2 --limit 20
+```
+
+说明：
+
+- `resources get` 默认会尝试补齐资源内容字段（`content.summary_html` / `content.content_html`），更接近飞书 `fetch` 的读取体验。
+- 如果只想快速拿列表层字段，可加 `--no-content`。
+- `search course/global` 支持 `--offset` 翻页；返回体里有 `meta.next_offset`、`meta.has_more`、`meta.total_count`。
+- `courses/activities/resources/assignments/quiz list` 也支持 `--offset` + `--limit`；`--limit 0` 表示从 offset 开始返回全部。
+- `questions search`、`forum discussions`、`notifications list` 也支持统一分页；通知命令里 `--offset` 等价于 `--limit-from`（推荐用 `--offset`）。
+
+### 3.1) Mathstate 命令
+
+`mathstate` 对应 `public/local/mathstate` 插件，负责题库知识点、题型、题目映射和学习证据的状态同步。
+
+```bash
+bin/moodle --json mathstate kp-upsert \
+  --item-json '{"kg_id":"kp.demo.1","name":"集合概念"}'
+
+bin/moodle --json mathstate qtype-upsert \
+  --item-json '{"qg_id":"qg.demo.1","name":"集合概念题","knowledge_points":["kp.demo.1"]}'
+
+bin/moodle --json mathstate question-map-upsert \
+  --item-json '{"questionid":1,"qg_id":"qg.demo.1","kg_ids":["kp.demo.1"],"mapping_source":"manual","mapping_confidence":95}'
+
+bin/moodle --json mathstate evidence-ingest \
+  --item-json '{"userid":2,"courseid":108,"questionid":1,"result":"wrong","score":0,"maxscore":1}'
+
+bin/moodle --json mathstate student-summary --course-id 108 --user-id 2
+bin/moodle --json mathstate reviews-due --course-id 108 --user-id 2 --limit 20
+```
+
+说明：
+
+- `kp-upsert / qtype-upsert / question-map-upsert / evidence-ingest` 都支持 `--input <json文件>` 或重复传 `--item-json`。
+- `student-summary` 默认返回 `kp_states`、`qtype_states`、`due_tasks`。
+- `reviews-due` 默认按到期时间和优先级返回复习任务。
+
+### 4) 输出模式
+
+自动化场景建议固定用 `--json`。
+
+人工查看可用：
+
+```bash
+bin/moodle --format table courses list
+bin/moodle --format csv notifications list --limit 20
+bin/moodle --format ndjson activities due --course-id 108 --limit 20
+```
+
+### 5) 安全写入流程（强烈建议）
+
+先 `--dry-run` 预览，再用 `--force` 真正执行。
+
+```bash
+bin/moodle --json --dry-run calendar upsert-plan \
+  --idempotency-key demo-preview \
+  --plan-key demo-plan \
+  --item-json '{"item_key":"task-1","name":"Preview","description":"preview","timestart":1773833400,"timeduration":1800}'
+```
+
+确认无误后，把同一条命令改为 `--force` 再执行。
+
+### 6) 换电脑能不能直接用？
+
+可以。流程就是：
+
+1. 克隆仓库（或安装 `scripts/moodle_cli.py` + `bin/moodle`）
+2. 执行 `config init`
+3. 执行 `auth login`
+4. 执行 `doctor` 和 `auth status`
+
+不需要手动拷 token 文件；登录后会在本机生成凭据（优先 keychain，失败时文件回退）。
 
 ### Seed + service registration
 

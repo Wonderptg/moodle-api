@@ -1321,6 +1321,341 @@ def build_course_route(course: Dict[str, Any], sections: Sequence[Dict[str, Any]
     }
 
 
+SEARCH_SUPPORTED_KINDS: Sequence[str] = (
+    "course",
+    "activity",
+    "resource",
+    "assignment",
+    "quiz",
+    "question",
+)
+
+
+def normalize_search_query(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+def split_search_terms(value: str) -> List[str]:
+    normalized = normalize_search_query(value)
+    if not normalized:
+        return []
+    return [part for part in normalized.split(" ") if part]
+
+
+def normalize_search_kinds(kinds: Sequence[str]) -> List[str]:
+    selected = [str(item or "").strip().lower() for item in kinds if str(item or "").strip()]
+    if not selected:
+        return list(SEARCH_SUPPORTED_KINDS)
+    unsupported = sorted({item for item in selected if item not in SEARCH_SUPPORTED_KINDS})
+    if unsupported:
+        raise CliError(
+            f"unsupported --kind value(s): {', '.join(unsupported)}",
+            EXIT_USAGE,
+            hint=f"supported kinds: {', '.join(SEARCH_SUPPORTED_KINDS)}",
+        )
+    seen: set[str] = set()
+    out: List[str] = []
+    for item in selected:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def attach_course_context(resource: Dict[str, Any], course: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(resource)
+    out.setdefault("course_id", safe_int(course.get("id")))
+    out.setdefault("course_code", str(course.get("code") or ""))
+    out.setdefault("course_title", str(course.get("title") or ""))
+    return out
+
+
+def searchable_values(resource: Dict[str, Any]) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    for field in (
+        "title",
+        "code",
+        "kind",
+        "summary",
+        "message",
+        "course_title",
+        "course_code",
+        "category_name",
+        "forum_title",
+        "event_type",
+    ):
+        raw = resource.get(field)
+        if raw is None:
+            continue
+        text = normalize_search_query(str(raw))
+        if text:
+            values[field] = text
+    category = resource.get("category")
+    if isinstance(category, dict):
+        for field in ("name", "display_path", "path"):
+            raw = category.get(field)
+            text = normalize_search_query(str(raw or ""))
+            if text:
+                values[f"category.{field}"] = text
+        path_names = category.get("path_names")
+        if isinstance(path_names, list):
+            text = normalize_search_query(" ".join(str(item or "") for item in path_names))
+            if text:
+                values["category.path_names"] = text
+    learning = resource.get("learning")
+    if isinstance(learning, dict):
+        for field in ("course_type", "learning_mode", "agent_strategy"):
+            raw = learning.get(field)
+            text = normalize_search_query(str(raw or ""))
+            if text:
+                values[f"learning.{field}"] = text
+    content = resource.get("content")
+    if isinstance(content, dict):
+        for field in ("summary_html", "content_html"):
+            raw = content.get(field)
+            text = normalize_search_query(compact_text(raw, limit=400))
+            if text:
+                values[f"content.{field}"] = text
+    return values
+
+
+def search_match(resource: Dict[str, Any], query: str) -> Tuple[int, List[str]]:
+    terms = split_search_terms(query)
+    if not terms:
+        return 1, []
+
+    values = searchable_values(resource)
+    if not values:
+        return 0, []
+
+    matched_fields: List[str] = []
+    score = 0
+    title_value = values.get("title", "")
+    code_value = values.get("code", "")
+
+    for term in terms:
+        term_matched = False
+        if title_value == term:
+            score += 120
+            term_matched = True
+            if "title" not in matched_fields:
+                matched_fields.append("title")
+        elif title_value and term in title_value:
+            score += 80
+            term_matched = True
+            if "title" not in matched_fields:
+                matched_fields.append("title")
+        elif code_value and term == code_value:
+            score += 70
+            term_matched = True
+            if "code" not in matched_fields:
+                matched_fields.append("code")
+
+        if not term_matched:
+            for field, text in values.items():
+                if term in text:
+                    score += 40
+                    term_matched = True
+                    if field not in matched_fields:
+                        matched_fields.append(field)
+                    break
+        if not term_matched:
+            return 0, []
+
+    return score, matched_fields
+
+
+def make_search_result(resource: Dict[str, Any], *, query: str, source_command: str) -> Optional[Dict[str, Any]]:
+    score, matched_fields = search_match(resource, query)
+    if score <= 0:
+        return None
+    out = dict(resource)
+    out["search_score"] = score
+    out["matched_fields"] = matched_fields
+    out["source_command"] = source_command
+    return out
+
+
+def dedupe_search_results(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    best: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+    for item in items:
+        key = (
+            str(item.get("resource_type") or ""),
+            safe_int(item.get("id")),
+            safe_int(item.get("course_id")),
+        )
+        current = best.get(key)
+        if current is None or safe_int(item.get("search_score")) > safe_int(current.get("search_score")):
+            best[key] = item
+    out = list(best.values())
+    out.sort(key=lambda item: (-safe_int(item.get("search_score")), str(item.get("title") or ""), str(item.get("resource_type") or "")))
+    return out
+
+
+def resolve_offset_limit(offset: int, limit: int) -> Tuple[int, int]:
+    normalized_offset = safe_int(offset)
+    normalized_limit = safe_int(limit)
+    if normalized_offset < 0:
+        raise CliError("--offset must be >= 0", EXIT_USAGE)
+    if normalized_limit < 1:
+        raise CliError("--limit must be >= 1", EXIT_USAGE)
+    return normalized_offset, normalized_limit
+
+
+def paginate_items(items: Sequence[Dict[str, Any]], *, offset: int, limit: int) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    total_count = len(items)
+    start = min(offset, total_count)
+    end = min(start + limit, total_count)
+    page = list(items[start:end])
+    has_more = end < total_count
+    next_offset = end if has_more else None
+    return page, {
+        "offset": offset,
+        "limit": limit,
+        "total_count": total_count,
+        "has_more": has_more,
+        "next_offset": next_offset,
+    }
+
+
+def resolve_list_offset_limit(offset: int, limit: int) -> Tuple[int, int]:
+    normalized_offset = safe_int(offset)
+    normalized_limit = safe_int(limit)
+    if normalized_offset < 0:
+        raise CliError("--offset must be >= 0", EXIT_USAGE)
+    if normalized_limit < 0:
+        raise CliError("--limit must be >= 0", EXIT_USAGE)
+    return normalized_offset, normalized_limit
+
+
+def paginate_items_optional_limit(items: Sequence[Dict[str, Any]], *, offset: int, limit: int) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    total_count = len(items)
+    start = min(offset, total_count)
+    if limit <= 0:
+        page = list(items[start:])
+        return page, {
+            "offset": offset,
+            "limit": limit,
+            "total_count": total_count,
+            "has_more": False,
+            "next_offset": None,
+        }
+    return paginate_items(items, offset=offset, limit=limit)
+
+
+def paginate_normalized_envelope(value: Any, args: argparse.Namespace, list_key: str) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    items = list(raw_data.get(list_key) or [])
+    offset, limit = resolve_list_offset_limit(getattr(args, "offset", 0), getattr(args, "limit", 0))
+    page, paging = paginate_items_optional_limit(items, offset=offset, limit=limit)
+    data = dict(raw_data)
+    data[list_key] = page
+    data = with_items_alias(data, list_key)
+    meta = dict(value.get("meta") or {})
+    meta.update({
+        "count": len(page),
+        "total_count": safe_int(paging.get("total_count")),
+        "offset": safe_int(paging.get("offset")),
+        "limit": safe_int(paging.get("limit")),
+        "has_more": bool(paging.get("has_more")),
+        "next_offset": paging.get("next_offset"),
+    })
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity=str(value.get("identity") or "user"),
+        data=data,
+        meta=meta,
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def build_paging_snapshot(raw_data: Dict[str, Any], item_count: int, *, default_limit: int = 0) -> Dict[str, Any]:
+    offset = safe_int(raw_data.get("offset", raw_data.get("limitfrom")))
+    limit = safe_int(raw_data.get("limit", raw_data.get("limitnum", default_limit)))
+    total_raw = raw_data.get("totalcount")
+    has_more_raw = raw_data.get("hasmore")
+    next_raw = raw_data.get("nextoffset")
+
+    if total_raw is None:
+        total_count: Optional[int] = None
+    else:
+        total_count = safe_int(total_raw)
+
+    if has_more_raw is None:
+        if limit > 0 and item_count >= limit:
+            if total_count is None:
+                has_more = True
+            else:
+                has_more = (offset + item_count) < total_count
+        else:
+            has_more = False
+    else:
+        has_more = coerce_bool(has_more_raw)
+
+    if next_raw is None:
+        next_offset: Optional[int] = (offset + item_count) if has_more else None
+    else:
+        next_offset = safe_int(next_raw)
+
+    if total_count is None and not has_more:
+        total_count = offset + item_count
+
+    return {
+        "offset": offset,
+        "limit": limit,
+        "total_count": total_count,
+        "has_more": has_more,
+        "next_offset": next_offset,
+    }
+
+
+def build_search_envelope(
+    *,
+    query: str,
+    scope: str,
+    kinds: Sequence[str],
+    results: Sequence[Dict[str, Any]],
+    total_count: int,
+    offset: int,
+    limit: int,
+    has_more: bool,
+    next_offset: Optional[int],
+    filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return build_cli_envelope(
+        ok=True,
+        identity="user",
+        data=with_items_alias({
+            "query": query,
+            "scope": scope,
+            "kinds": list(kinds),
+            "filters": dict(filters or {}),
+            "results": list(results),
+            "paging": {
+                "offset": offset,
+                "limit": limit,
+                "total_count": total_count,
+                "has_more": has_more,
+                "next_offset": next_offset,
+            },
+        }, "results"),
+        meta={
+            "count": len(results),
+            "total_count": total_count,
+            "offset": offset,
+            "limit": limit,
+            "has_more": has_more,
+            "next_offset": next_offset,
+            "primary_resource": "search_results",
+        },
+    )
+
+
 def transform_courses_list_result(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
@@ -1429,15 +1764,15 @@ def transform_quiz_list_result(value: Any) -> Any:
 
 def transform_course_command_output(value: Any, args: argparse.Namespace) -> Any:
     if command_path_equals(args, ["courses", "list"]):
-        return transform_courses_list_result(value)
+        return paginate_normalized_envelope(transform_courses_list_result(value), args, "courses")
     if command_path_equals(args, ["courses", "outline"]):
         return transform_courses_outline_result(value)
     if command_path_equals(args, ["activities", "list"]):
-        return transform_activities_list_result(value)
+        return paginate_normalized_envelope(transform_activities_list_result(value), args, "activities")
     if command_path_equals(args, ["resources", "list"]):
-        return transform_resources_list_result(value)
+        return paginate_normalized_envelope(transform_resources_list_result(value), args, "resources")
     if command_path_equals(args, ["quiz", "list"]):
-        return transform_quiz_list_result(value)
+        return paginate_normalized_envelope(transform_quiz_list_result(value), args, "quizzes")
     return value
 
 
@@ -1525,6 +1860,7 @@ def transform_forum_discussions_result(value: Any) -> Any:
     if not isinstance(raw_data, dict):
         return value
     discussions = [normalize_forum_discussion_item(item) for item in list(raw_data.get("discussions") or [])]
+    paging = build_paging_snapshot(raw_data, len(discussions), default_limit=20)
     filters = {
         "course_id": safe_int(raw_data.get("courseid")),
         "forum_id": safe_int(raw_data.get("forumid")),
@@ -1532,8 +1868,16 @@ def transform_forum_discussions_result(value: Any) -> Any:
     return build_cli_envelope(
         ok=bool(value.get("ok", True)),
         identity="user",
-        data=with_items_alias({"filters": filters, "discussions": discussions}, "discussions"),
-        meta={"count": len(discussions), "primary_resource": "forum_discussions"},
+        data=with_items_alias({"filters": filters, "paging": paging, "discussions": discussions}, "discussions"),
+        meta={
+            "count": len(discussions),
+            "total_count": paging.get("total_count"),
+            "offset": paging.get("offset"),
+            "limit": paging.get("limit"),
+            "has_more": paging.get("has_more"),
+            "next_offset": paging.get("next_offset"),
+            "primary_resource": "forum_discussions",
+        },
         error=value.get("error") if isinstance(value.get("error"), dict) else None,
     )
 
@@ -1545,15 +1889,24 @@ def transform_notifications_list_result(value: Any) -> Any:
     if not isinstance(raw_data, dict):
         return value
     notifications = [normalize_notification_item(item) for item in list(raw_data.get("notifications") or [])]
+    paging = build_paging_snapshot(raw_data, len(notifications), default_limit=50)
     page = {
-        "offset": safe_int(raw_data.get("limitfrom")),
-        "limit": safe_int(raw_data.get("limitnum")),
+        "offset": paging.get("offset"),
+        "limit": paging.get("limit"),
     }
     return build_cli_envelope(
         ok=bool(value.get("ok", True)),
         identity="user",
-        data=with_items_alias({"page": page, "notifications": notifications}, "notifications"),
-        meta={"count": len(notifications), "primary_resource": "notifications"},
+        data=with_items_alias({"page": page, "paging": paging, "notifications": notifications}, "notifications"),
+        meta={
+            "count": len(notifications),
+            "total_count": paging.get("total_count"),
+            "offset": paging.get("offset"),
+            "limit": paging.get("limit"),
+            "has_more": paging.get("has_more"),
+            "next_offset": paging.get("next_offset"),
+            "primary_resource": "notifications",
+        },
         error=value.get("error") if isinstance(value.get("error"), dict) else None,
     )
 
@@ -1565,11 +1918,20 @@ def transform_questions_search_result(value: Any) -> Any:
     if not isinstance(raw_data, dict):
         return value
     questions = [normalize_question_item(item) for item in list(raw_data.get("questions") or [])]
+    paging = build_paging_snapshot(raw_data, len(questions), default_limit=50)
     return build_cli_envelope(
         ok=bool(value.get("ok", True)),
         identity="user",
-        data=with_items_alias({"questions": questions}, "questions"),
-        meta={"count": len(questions), "primary_resource": "questions"},
+        data=with_items_alias({"paging": paging, "questions": questions}, "questions"),
+        meta={
+            "count": len(questions),
+            "total_count": paging.get("total_count"),
+            "offset": paging.get("offset"),
+            "limit": paging.get("limit"),
+            "has_more": paging.get("has_more"),
+            "next_offset": paging.get("next_offset"),
+            "primary_resource": "questions",
+        },
         error=value.get("error") if isinstance(value.get("error"), dict) else None,
     )
 
@@ -1653,7 +2015,7 @@ def transform_extended_command_output(value: Any, args: argparse.Namespace) -> A
     if command_path_equals(args, ["activities", "due"]):
         return transform_activities_due_result(value)
     if command_path_equals(args, ["assignments", "list"]):
-        return transform_assignments_list_result(value)
+        return paginate_normalized_envelope(transform_assignments_list_result(value), args, "assignments")
     if command_path_equals(args, ["assignments", "status"]):
         return transform_assignments_status_result(value)
     if command_path_equals(args, ["calendar", "list"]):
@@ -1664,6 +2026,8 @@ def transform_extended_command_output(value: Any, args: argparse.Namespace) -> A
         return transform_notifications_list_result(value)
     if command_path_equals(args, ["questions", "search"]):
         return transform_questions_search_result(value)
+    if command_path_equals(args, ["activities", "get"]):
+        return transform_activities_detail_result(value)
     if command_path_equals(args, ["activities", "detail"]):
         return transform_activities_detail_result(value)
     if command_path_equals(args, ["quiz", "attempts"]):
@@ -1843,6 +2207,57 @@ def emit_learning_list_pretty(value: Dict[str, Any], *, list_key: str, heading: 
         emit_table_rows(rows)
 
 
+def emit_auth_output(value: Any, args: argparse.Namespace) -> bool:
+    if tuple(getattr(args, "command_path", []) or []) != ("auth", "login"):
+        return False
+    if not isinstance(value, dict):
+        return False
+    fmt = (getattr(args, "format", "") or "").strip().lower()
+    if args.json or args.plain:
+        return False
+    if fmt in {"json", "table", "csv", "ndjson"}:
+        return False
+
+    if bool(value.get("ok")) and value.get("verification_url") and value.get("device_code"):
+        verification_url = str(value.get("verification_url") or "")
+        user_code = str(value.get("user_code") or "")
+        device_code = str(value.get("device_code") or "")
+        expires_in = safe_int(value.get("expires_in"))
+        interval = safe_int(value.get("interval"))
+        profile_name = ""
+        profile_raw = value.get("profile")
+        if isinstance(profile_raw, dict):
+            profile_name = str(profile_raw.get("name") or "")
+        elif isinstance(profile_raw, str):
+            profile_name = profile_raw
+        resume_cmd = f"moodle auth login --device-code {device_code}"
+        if profile_name:
+            resume_cmd += f" --name {profile_name}"
+
+        print("Open this URL to approve CLI login:")
+        print(verification_url)
+        if user_code:
+            print(f"User code: {user_code}")
+        if expires_in > 0:
+            print(f"Expires in: {expires_in}s")
+        if interval > 0:
+            print(f"Poll interval: {interval}s")
+        print(f"Resume command: {resume_cmd}")
+        return True
+
+    if bool(value.get("ok")) and isinstance(value.get("profile"), dict):
+        profile = dict(value.get("profile") or {})
+        user = dict(value.get("user") or {})
+        print("Login completed.")
+        if profile.get("name"):
+            print(f"Profile: {profile.get('name')}")
+        if user.get("username"):
+            print(f"User: {user.get('username')}")
+        return True
+
+    return False
+
+
 def emit_course_output(value: Any, args: argparse.Namespace) -> bool:
     supported = {
         ("courses", "list"),
@@ -1919,6 +2334,7 @@ def transform_output(value: Any, args: argparse.Namespace) -> Any:
         value = transform_course_command_output(value, args)
     if tuple(getattr(args, "command_path", []) or []) in {
         ("activities", "due"),
+        ("activities", "get"),
         ("activities", "detail"),
         ("assignments", "list"),
         ("assignments", "status"),
@@ -1941,6 +2357,8 @@ def transform_output(value: Any, args: argparse.Namespace) -> Any:
 
 def emit_output(value: Any, args: argparse.Namespace) -> None:
     if emit_course_output(value, args):
+        return
+    if emit_auth_output(value, args):
         return
     fmt = (getattr(args, "format", "") or "").strip().lower()
     if fmt == "json":
@@ -2022,6 +2440,31 @@ def resolve_plan_items(args: argparse.Namespace) -> List[Dict[str, Any]]:
     return items
 
 
+def resolve_batch_items(args: argparse.Namespace, *, label: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    if getattr(args, "input", ""):
+        loaded = load_json_file(args.input)
+        if isinstance(loaded, dict) and isinstance(loaded.get("items"), list):
+            loaded = loaded["items"]
+        if not isinstance(loaded, list):
+            raise CliError("--input must contain a JSON array or an object with an 'items' array", EXIT_USAGE)
+        for item in loaded:
+            if not isinstance(item, dict):
+                raise CliError(f"{label} input items must be objects", EXIT_USAGE)
+            items.append(item)
+    for raw in getattr(args, "item_json", []) or []:
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise CliError(f"invalid --item-json payload: {e}", EXIT_USAGE) from e
+        if not isinstance(item, dict):
+            raise CliError("--item-json must decode to an object", EXIT_USAGE)
+        items.append(item)
+    if not items:
+        raise CliError(f"{label} requires --input or at least one --item-json", EXIT_USAGE)
+    return items
+
+
 def _pair_from_object(item: Any, flag_name: str) -> Dict[str, Any]:
     if not isinstance(item, dict):
         raise CliError(f"{flag_name} must decode to an object", EXIT_USAGE)
@@ -2065,8 +2508,208 @@ def command_catalog_get(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     return cli.call("local_aiagentapi_get_api_catalog", {})
 
 
+def command_search_global(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    offset, limit = resolve_offset_limit(args.offset, args.limit)
+    kinds = normalize_search_kinds(args.kind or [])
+    requested_course_ids = [int(item) for item in list(args.course_id or []) if int(item) > 0]
+    courses_payload = transform_courses_list_result(cli.call("local_aiagentapi_courses_list_my", {}))
+    all_courses = list(courses_payload.get("data", {}).get("courses") or [])
+    if requested_course_ids:
+        courses = [item for item in all_courses if safe_int(item.get("id")) in set(requested_course_ids)]
+    else:
+        courses = list(all_courses)
+    course_index = {safe_int(item.get("id")): item for item in courses}
+    course_ids = list(course_index.keys())
+    if not requested_course_ids and len(course_ids) > args.max_courses:
+        course_ids = course_ids[: args.max_courses]
+
+    results: List[Dict[str, Any]] = []
+
+    if "course" in kinds:
+        for course in courses:
+            result = make_search_result(course, query=args.query, source_command="courses get")
+            if result:
+                results.append(result)
+
+    if "activity" in kinds:
+        for course_id in course_ids:
+            payload = transform_activities_list_result(cli.call("local_aiagentapi_activities_list_by_course", {
+                "courseid": course_id,
+                "modname": "",
+            }))
+            course = dict(payload.get("data", {}).get("course") or course_index.get(course_id) or {})
+            for item in list(payload.get("data", {}).get("activities") or []):
+                result = make_search_result(attach_course_context(item, course), query=args.query, source_command="activities get")
+                if result:
+                    results.append(result)
+
+    if "resource" in kinds:
+        for course_id in course_ids:
+            payload = transform_resources_list_result(cli.call("local_aiagentapi_resources_list_by_course", {
+                "courseid": course_id,
+            }))
+            course = dict(payload.get("data", {}).get("course") or course_index.get(course_id) or {})
+            for item in list(payload.get("data", {}).get("resources") or []):
+                result = make_search_result(attach_course_context(item, course), query=args.query, source_command="resources get")
+                if result:
+                    results.append(result)
+
+    if "assignment" in kinds:
+        for course_id in course_ids:
+            payload = transform_assignments_list_result(cli.call("local_aiagentapi_assignments_list_by_course", {
+                "courseid": course_id,
+            }))
+            course = dict(payload.get("data", {}).get("course") or course_index.get(course_id) or {})
+            for item in list(payload.get("data", {}).get("assignments") or []):
+                result = make_search_result(attach_course_context(item, course), query=args.query, source_command="assignments get")
+                if result:
+                    results.append(result)
+
+    if "quiz" in kinds:
+        for course_id in course_ids:
+            payload = transform_quiz_list_result(cli.call("local_aiagentapi_quiz_list_by_course", {
+                "courseid": course_id,
+            }))
+            course = dict(payload.get("data", {}).get("course") or course_index.get(course_id) or {})
+            for item in list(payload.get("data", {}).get("quizzes") or []):
+                result = make_search_result(attach_course_context(item, course), query=args.query, source_command="quiz get")
+                if result:
+                    results.append(result)
+
+    if "question" in kinds:
+        if requested_course_ids:
+            search_course_ids = course_ids
+        else:
+            search_course_ids = [0]
+        for course_id in search_course_ids:
+            payload = transform_questions_search_result(cli.call("local_aiagentapi_questionbank_search", {
+                "query": args.query,
+                "courseid": course_id,
+                "categoryid": 0,
+                "recurse": False,
+                "qtypes": [],
+                "limit": max(limit + offset, limit),
+            }))
+            course = course_index.get(course_id, {})
+            for item in list(payload.get("data", {}).get("questions") or []):
+                resource = attach_course_context(item, course) if course else dict(item)
+                result = make_search_result(resource, query=args.query, source_command="questions search")
+                if result:
+                    results.append(result)
+
+    ranked_results = dedupe_search_results(results)
+    page_results, paging = paginate_items(ranked_results, offset=offset, limit=limit)
+    return build_search_envelope(
+        query=args.query,
+        scope="global",
+        kinds=kinds,
+        results=page_results,
+        total_count=safe_int(paging.get("total_count")),
+        offset=safe_int(paging.get("offset")),
+        limit=safe_int(paging.get("limit")),
+        has_more=bool(paging.get("has_more")),
+        next_offset=paging.get("next_offset"),
+        filters={
+            "course_ids": requested_course_ids,
+            "max_courses": args.max_courses,
+        },
+    )
+
+
+def command_search_course(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    offset, limit = resolve_offset_limit(args.offset, args.limit)
+    kinds = [kind for kind in normalize_search_kinds(args.kind or []) if kind != "course"]
+    if not kinds:
+        kinds = ["activity", "resource", "assignment", "quiz", "question"]
+
+    outline_payload = transform_courses_outline_result(cli.call("local_aiagentapi_course_get_outline", {
+        "courseid": args.course_id,
+    }))
+    course = dict(outline_payload.get("data", {}).get("course") or {})
+    results: List[Dict[str, Any]] = []
+
+    if args.include_course:
+        result = make_search_result(course, query=args.query, source_command="courses get")
+        if result:
+            results.append(result)
+
+    if "activity" in kinds:
+        payload = transform_activities_list_result(cli.call("local_aiagentapi_activities_list_by_course", {
+            "courseid": args.course_id,
+            "modname": "",
+        }))
+        for item in list(payload.get("data", {}).get("activities") or []):
+            result = make_search_result(attach_course_context(item, course), query=args.query, source_command="activities get")
+            if result:
+                results.append(result)
+
+    if "resource" in kinds:
+        payload = transform_resources_list_result(cli.call("local_aiagentapi_resources_list_by_course", {
+            "courseid": args.course_id,
+        }))
+        for item in list(payload.get("data", {}).get("resources") or []):
+            result = make_search_result(attach_course_context(item, course), query=args.query, source_command="resources get")
+            if result:
+                results.append(result)
+
+    if "assignment" in kinds:
+        payload = transform_assignments_list_result(cli.call("local_aiagentapi_assignments_list_by_course", {
+            "courseid": args.course_id,
+        }))
+        for item in list(payload.get("data", {}).get("assignments") or []):
+            result = make_search_result(attach_course_context(item, course), query=args.query, source_command="assignments get")
+            if result:
+                results.append(result)
+
+    if "quiz" in kinds:
+        payload = transform_quiz_list_result(cli.call("local_aiagentapi_quiz_list_by_course", {
+            "courseid": args.course_id,
+        }))
+        for item in list(payload.get("data", {}).get("quizzes") or []):
+            result = make_search_result(attach_course_context(item, course), query=args.query, source_command="quiz get")
+            if result:
+                results.append(result)
+
+    if "question" in kinds:
+        payload = transform_questions_search_result(cli.call("local_aiagentapi_questionbank_search", {
+            "query": args.query,
+            "courseid": args.course_id,
+            "categoryid": 0,
+            "recurse": False,
+            "qtypes": [],
+            "limit": max(limit + offset, limit),
+        }))
+        for item in list(payload.get("data", {}).get("questions") or []):
+            result = make_search_result(attach_course_context(item, course), query=args.query, source_command="questions search")
+            if result:
+                results.append(result)
+
+    ranked_results = dedupe_search_results(results)
+    page_results, paging = paginate_items(ranked_results, offset=offset, limit=limit)
+    return build_search_envelope(
+        query=args.query,
+        scope="course",
+        kinds=kinds,
+        results=page_results,
+        total_count=safe_int(paging.get("total_count")),
+        offset=safe_int(paging.get("offset")),
+        limit=safe_int(paging.get("limit")),
+        has_more=bool(paging.get("has_more")),
+        next_offset=paging.get("next_offset"),
+        filters={
+            "course_id": args.course_id,
+        },
+    )
+
+
 def command_courses_list(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     return cli.call("local_aiagentapi_courses_list_my", {})
+
+
+def command_courses_get(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return transform_courses_outline_result(cli.call("local_aiagentapi_course_get_outline", {
+        "courseid": args.course_id,
+    }))
 
 
 def command_courses_outline(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
@@ -2097,10 +2740,101 @@ def command_activities_detail(cli: "MoodleCLI", args: argparse.Namespace) -> Any
     })
 
 
+def command_resources_get(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    payload = transform_resources_list_result(cli.call("local_aiagentapi_resources_list_by_course", {
+        "courseid": args.course_id,
+    }))
+    resources = list(payload.get("data", {}).get("resources") or [])
+    resource = next((item for item in resources if safe_int(item.get("id")) == args.cmid), None)
+    if not resource:
+        raise CliError(
+            f"resource cmid {args.cmid} not found in course {args.course_id}",
+            EXIT_NOT_FOUND,
+            error_type="not_found",
+        )
+    course = dict(payload.get("data", {}).get("course") or {})
+    merged = dict(resource)
+    content_included = False
+    content_error = ""
+    if not getattr(args, "no_content", False):
+        try:
+            detail_payload = transform_activities_detail_result(cli.call("local_aiagentapi_course_activity_detail", {
+                "cmid": args.cmid,
+            }))
+            detail_activity = dict(detail_payload.get("data", {}).get("activity") or {})
+            if safe_int(detail_activity.get("id")) == args.cmid:
+                content = detail_activity.get("content")
+                if isinstance(content, dict):
+                    merged["content"] = {
+                        "summary_html": str(content.get("summary_html") or ""),
+                        "content_html": str(content.get("content_html") or ""),
+                    }
+                if detail_activity.get("summary") and not merged.get("summary"):
+                    merged["summary"] = detail_activity["summary"]
+                for field in ("open_at", "due_at", "completion_expected_at", "external_url"):
+                    if detail_activity.get(field):
+                        merged[field] = detail_activity[field]
+                content_included = "content" in merged
+        except CliError as e:
+            # Resource list is still valid even if detail content fetch is blocked or unavailable.
+            content_error = str(e)
+    return build_cli_envelope(
+        ok=True,
+        identity="user",
+        data=with_items_alias({
+            "course": course,
+            "resource": merged,
+            "resources": [merged],
+        }, "resources"),
+        meta={
+            "count": 1,
+            "primary_resource": "resource_detail",
+            "content_included": content_included,
+            "content_error": content_error,
+        },
+    )
+
+
 def command_assignments_list(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     return cli.call("local_aiagentapi_assignments_list_by_course", {
         "courseid": args.course_id,
     })
+
+
+def command_assignments_get(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    list_payload = transform_assignments_list_result(cli.call("local_aiagentapi_assignments_list_by_course", {
+        "courseid": args.course_id,
+    }))
+    assignments = list(list_payload.get("data", {}).get("assignments") or [])
+    assignment = next((item for item in assignments if safe_int(item.get("id")) == args.assign_id), None)
+    if not assignment:
+        raise CliError(
+            f"assignment {args.assign_id} not found in course {args.course_id}",
+            EXIT_NOT_FOUND,
+            error_type="not_found",
+        )
+    status_payload = transform_assignments_status_result(cli.call("local_aiagentapi_assignments_my_status", {
+        "courseid": args.course_id,
+        "assignid": args.assign_id,
+    }))
+    statuses = list(status_payload.get("data", {}).get("assignments") or [])
+    status = statuses[0] if statuses else {}
+    merged = dict(assignment)
+    if status:
+        merged["status"] = status
+        for field in ("window_status", "submission_status", "submitted_at", "updated_at", "attempt", "is_overdue", "is_graded", "grade", "max_grade"):
+            if field in status:
+                merged[field] = status[field]
+    return build_cli_envelope(
+        ok=True,
+        identity="user",
+        data=with_items_alias({
+            "course": dict(list_payload.get("data", {}).get("course") or {}),
+            "assignment": merged,
+            "assignments": [merged],
+        }, "assignments"),
+        meta={"count": 1, "primary_resource": "assignment_detail"},
+    )
 
 
 def command_assignments_status(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
@@ -2150,14 +2884,31 @@ def command_questions_categories(cli: "MoodleCLI", args: argparse.Namespace) -> 
 
 
 def command_questions_search(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
-    return cli.call("local_aiagentapi_questionbank_search", {
+    offset, limit = resolve_offset_limit(args.offset, args.limit)
+    window_limit = max(limit + offset, limit)
+    response = cli.call("local_aiagentapi_questionbank_search", {
         "query": args.query,
         "courseid": args.course_id,
         "categoryid": args.category_id,
         "recurse": args.recurse,
         "qtypes": args.qtype or [],
-        "limit": args.limit,
+        "limit": window_limit,
     })
+    if not isinstance(response, dict):
+        return response
+    raw_data = response.get("data")
+    if not isinstance(raw_data, dict):
+        return response
+    questions = list(raw_data.get("questions") or [])
+    page, paging = paginate_items(questions, offset=offset, limit=limit)
+    raw_data["questions"] = page
+    raw_data["offset"] = safe_int(paging.get("offset"))
+    raw_data["limit"] = safe_int(paging.get("limit"))
+    raw_data["totalcount"] = safe_int(paging.get("total_count"))
+    raw_data["hasmore"] = bool(paging.get("has_more"))
+    raw_data["nextoffset"] = paging.get("next_offset")
+    response["data"] = raw_data
+    return response
 
 
 def command_questions_pick_random(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
@@ -2192,6 +2943,42 @@ def command_quiz_list(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     return cli.call("local_aiagentapi_quiz_list_by_course", {
         "courseid": args.course_id,
     })
+
+
+def command_quiz_get(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    list_payload = transform_quiz_list_result(cli.call("local_aiagentapi_quiz_list_by_course", {
+        "courseid": args.course_id,
+    }))
+    quizzes = list(list_payload.get("data", {}).get("quizzes") or [])
+    quiz = next((item for item in quizzes if safe_int(item.get("id")) == args.quiz_id), None)
+    if not quiz:
+        raise CliError(
+            f"quiz {args.quiz_id} not found in course {args.course_id}",
+            EXIT_NOT_FOUND,
+            error_type="not_found",
+        )
+    attempts_payload = transform_quiz_attempts_result(cli.call("local_aiagentapi_quiz_attempts_my", {
+        "courseid": args.course_id,
+        "quizid": args.quiz_id,
+    }))
+    groups = list(attempts_payload.get("data", {}).get("quizzes") or [])
+    attempt_group = groups[0] if groups else {}
+    merged = dict(quiz)
+    if attempt_group:
+        merged["attempts"] = list(attempt_group.get("attempts") or [])
+        for field in ("open_at", "close_at", "attempts_allowed", "attempts_made", "attempts_left", "best_grade", "max_grade", "has_unfinished", "attempt_count"):
+            if field in attempt_group:
+                merged[field] = attempt_group[field]
+    return build_cli_envelope(
+        ok=True,
+        identity="user",
+        data=with_items_alias({
+            "course": dict(list_payload.get("data", {}).get("course") or {}),
+            "quiz": merged,
+            "quizzes": [merged],
+        }, "quizzes"),
+        meta={"count": 1, "primary_resource": "quiz_detail"},
+    )
 
 
 def command_quiz_attempts(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
@@ -2429,11 +3216,28 @@ def command_resources_list(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
 
 
 def command_forum_discussions(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
-    return cli.call("local_aiagentapi_forum_discussions_list", {
+    offset, limit = resolve_offset_limit(args.offset, args.limit)
+    window_limit = max(limit + offset, limit)
+    response = cli.call("local_aiagentapi_forum_discussions_list", {
         "courseid": args.course_id,
         "forumid": args.forum_id,
-        "limit": args.limit,
+        "limit": window_limit,
     })
+    if not isinstance(response, dict):
+        return response
+    raw_data = response.get("data")
+    if not isinstance(raw_data, dict):
+        return response
+    discussions = list(raw_data.get("discussions") or [])
+    page, paging = paginate_items(discussions, offset=offset, limit=limit)
+    raw_data["discussions"] = page
+    raw_data["offset"] = safe_int(paging.get("offset"))
+    raw_data["limit"] = safe_int(paging.get("limit"))
+    raw_data["totalcount"] = safe_int(paging.get("total_count"))
+    raw_data["hasmore"] = bool(paging.get("has_more"))
+    raw_data["nextoffset"] = paging.get("next_offset")
+    response["data"] = raw_data
+    return response
 
 
 def command_forum_create_discussion(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
@@ -2490,11 +3294,29 @@ def command_forum_delete_post(cli: "MoodleCLI", args: argparse.Namespace) -> Any
 
 
 def command_notifications_list(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
-    return cli.call("local_aiagentapi_notifications_list_my", {
-        "limitfrom": args.limit_from,
-        "limitnum": args.limit,
+    offset_raw = args.offset if getattr(args, "offset", None) is not None else args.limit_from
+    offset, limit = resolve_offset_limit(offset_raw, args.limit)
+    response = cli.call("local_aiagentapi_notifications_list_my", {
+        "limitfrom": offset,
+        "limitnum": limit,
         "unreadonly": args.unread_only,
     })
+    if not isinstance(response, dict):
+        return response
+    raw_data = response.get("data")
+    if not isinstance(raw_data, dict):
+        return response
+    notifications = list(raw_data.get("notifications") or [])
+    has_more = bool(limit > 0 and len(notifications) >= limit)
+    next_offset = offset + len(notifications) if has_more else None
+    total_count: Optional[int] = None if has_more else (offset + len(notifications))
+    raw_data["offset"] = offset
+    raw_data["limit"] = limit
+    raw_data["hasmore"] = has_more
+    raw_data["nextoffset"] = next_offset
+    raw_data["totalcount"] = total_count
+    response["data"] = raw_data
+    return response
 
 
 def command_grades_overview(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
@@ -2506,6 +3328,49 @@ def command_grades_overview(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
 def command_progress_course(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     return cli.call("local_aiagentapi_course_progress_my", {
         "courseid": args.course_id,
+    })
+
+
+def command_mathstate_kp_upsert(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_std_kp_upsert_batch", {
+        "items": resolve_batch_items(args, label="mathstate kp-upsert"),
+    })
+
+
+def command_mathstate_qtype_upsert(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_std_qtype_upsert_batch", {
+        "items": resolve_batch_items(args, label="mathstate qtype-upsert"),
+    })
+
+
+def command_mathstate_question_map_upsert(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_question_map_upsert_batch", {
+        "items": resolve_batch_items(args, label="mathstate question-map-upsert"),
+    })
+
+
+def command_mathstate_evidence_ingest(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_evidence_ingest_batch", {
+        "items": resolve_batch_items(args, label="mathstate evidence-ingest"),
+    })
+
+
+def command_mathstate_student_summary(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_student_summary", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "include_kp_states": args.include_kp_states,
+        "include_qtype_states": args.include_qtype_states,
+        "include_due_tasks": args.include_due_tasks,
+    })
+
+
+def command_mathstate_reviews_due(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_reviews_due", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "limit": args.limit,
+        "due_before": args.due_before,
     })
 
 
@@ -3127,10 +3992,34 @@ def build_parser() -> argparse.ArgumentParser:
     context_get = add_parser(context_sub, "get", description="Get current user context")
     context_get.set_defaults(handler=command_context_get, command_path=["context", "get"])
 
+    search_parser = add_parser(subparsers, "search", description="Search learning resources across Moodle")
+    search_sub = search_parser.add_subparsers(dest="_search_command")
+    search_global = add_parser(search_sub, "global", description="Search across courses and supported resource types")
+    search_global.add_argument("--query", default="", help="Search text")
+    search_global.add_argument("--kind", action="append", default=[], help="Resource kind to include (repeatable)")
+    search_global.add_argument("--course-id", action="append", type=int, default=[], help="Restrict to one or more course ids (repeatable)")
+    search_global.add_argument("--max-courses", type=int, default=20, help="Maximum courses to expand when searching course-scoped resources")
+    search_global.add_argument("--limit", type=int, default=50, help="Maximum search results to return")
+    search_global.add_argument("--offset", type=int, default=0, help="Search result offset for pagination")
+    search_global.set_defaults(handler=command_search_global, command_path=["search", "global"])
+    search_course = add_parser(search_sub, "course", description="Search within a single course")
+    search_course.add_argument("--course-id", type=int, required=True, help="Course id")
+    search_course.add_argument("--query", default="", help="Search text")
+    search_course.add_argument("--kind", action="append", default=[], help="Resource kind to include (repeatable)")
+    search_course.add_argument("--include-course", action="store_true", help="Also include the course itself in the search results")
+    search_course.add_argument("--limit", type=int, default=50, help="Maximum search results to return")
+    search_course.add_argument("--offset", type=int, default=0, help="Search result offset for pagination")
+    search_course.set_defaults(handler=command_search_course, command_path=["search", "course"])
+
     courses_parser = add_parser(subparsers, "courses", description="Course helpers")
     courses_sub = courses_parser.add_subparsers(dest="_courses_command")
     courses_list = add_parser(courses_sub, "list", description="List my courses", aliases=["ls"])
+    courses_list.add_argument("--limit", type=int, default=0, help="Maximum rows to return (0 means all)")
+    courses_list.add_argument("--offset", type=int, default=0, help="Result offset for pagination")
     courses_list.set_defaults(handler=command_courses_list, command_path=["courses", "list"])
+    courses_get = add_parser(courses_sub, "get", description="Get one course with normalized outline")
+    courses_get.add_argument("--course-id", type=int, required=True, help="Course id")
+    courses_get.set_defaults(handler=command_courses_get, command_path=["courses", "get"])
     courses_outline = add_parser(courses_sub, "outline", description="Get course outline")
     courses_outline.add_argument("--course-id", type=int, required=True, help="Course id")
     courses_outline.set_defaults(handler=command_courses_outline, command_path=["courses", "outline"])
@@ -3140,6 +4029,8 @@ def build_parser() -> argparse.ArgumentParser:
     activities_list = add_parser(activities_sub, "list", description="List visible activities in a course", aliases=["ls"])
     activities_list.add_argument("--course-id", type=int, required=True, help="Course id")
     activities_list.add_argument("--modname", default="", help="Optional module type filter, e.g. assign or quiz")
+    activities_list.add_argument("--limit", type=int, default=0, help="Maximum rows to return (0 means all)")
+    activities_list.add_argument("--offset", type=int, default=0, help="Result offset for pagination")
     activities_list.set_defaults(handler=command_activities_list, command_path=["activities", "list"])
     activities_due = add_parser(activities_sub, "due", description="List due/open/completion-expected timestamps", aliases=["agenda"])
     activities_due.add_argument("--course-id", type=int, default=0, help="Optional course id")
@@ -3147,6 +4038,9 @@ def build_parser() -> argparse.ArgumentParser:
     activities_due.add_argument("--timeend", type=int, default=0, help="Optional upper timestamp bound")
     activities_due.add_argument("--limit", type=int, default=100, help="Maximum rows to return")
     activities_due.set_defaults(handler=command_activities_due, command_path=["activities", "due"])
+    activities_get = add_parser(activities_sub, "get", description="Get one normalized activity detail")
+    activities_get.add_argument("--cmid", type=int, required=True, help="Course module id")
+    activities_get.set_defaults(handler=command_activities_detail, command_path=["activities", "get"])
     activities_detail = add_parser(activities_sub, "detail", description="Get normalized activity detail")
     activities_detail.add_argument("--cmid", type=int, required=True, help="Course module id")
     activities_detail.set_defaults(handler=command_activities_detail, command_path=["activities", "detail"])
@@ -3155,7 +4049,13 @@ def build_parser() -> argparse.ArgumentParser:
     assignments_sub = assignments_parser.add_subparsers(dest="_assignments_command")
     assignments_list = add_parser(assignments_sub, "list", description="List visible assignments in a course", aliases=["ls"])
     assignments_list.add_argument("--course-id", type=int, required=True, help="Course id")
+    assignments_list.add_argument("--limit", type=int, default=0, help="Maximum rows to return (0 means all)")
+    assignments_list.add_argument("--offset", type=int, default=0, help="Result offset for pagination")
     assignments_list.set_defaults(handler=command_assignments_list, command_path=["assignments", "list"])
+    assignments_get = add_parser(assignments_sub, "get", description="Get one assignment with current-user status")
+    assignments_get.add_argument("--course-id", type=int, required=True, help="Course id")
+    assignments_get.add_argument("--assign-id", type=int, required=True, help="Assignment id")
+    assignments_get.set_defaults(handler=command_assignments_get, command_path=["assignments", "get"])
     assignments_status = add_parser(assignments_sub, "status", description="List my submission status across assignments")
     assignments_status.add_argument("--course-id", type=int, default=0, help="Optional course id")
     assignments_status.add_argument("--assign-id", type=int, default=0, help="Optional assignment id")
@@ -3193,6 +4093,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--recurse", action="store_true", help="Include subcategories when category is set")
     search.add_argument("--qtype", action="append", default=[], help="Question type to include (repeatable)")
     search.add_argument("--limit", type=int, default=50, help="Maximum rows to return")
+    search.add_argument("--offset", type=int, default=0, help="Result offset for pagination")
     search.set_defaults(handler=command_questions_search, command_path=["questions", "search"])
     pick_random = add_parser(questions_sub, "pick-random", description="Pick random questions from a category", aliases=["pick"])
     pick_random.add_argument("--category-id", type=int, required=True, help="Question category id")
@@ -3213,7 +4114,13 @@ def build_parser() -> argparse.ArgumentParser:
     quiz_sub = quiz_parser.add_subparsers(dest="_quiz_command")
     quiz_list = add_parser(quiz_sub, "list", description="List quizzes in a course", aliases=["ls"])
     quiz_list.add_argument("--course-id", type=int, required=True, help="Course id")
+    quiz_list.add_argument("--limit", type=int, default=0, help="Maximum rows to return (0 means all)")
+    quiz_list.add_argument("--offset", type=int, default=0, help="Result offset for pagination")
     quiz_list.set_defaults(handler=command_quiz_list, command_path=["quiz", "list"])
+    quiz_get = add_parser(quiz_sub, "get", description="Get one quiz with current-user attempt summary")
+    quiz_get.add_argument("--course-id", type=int, required=True, help="Course id")
+    quiz_get.add_argument("--quiz-id", type=int, required=True, help="Quiz id")
+    quiz_get.set_defaults(handler=command_quiz_get, command_path=["quiz", "get"])
     quiz_attempts = add_parser(quiz_sub, "attempts", description="List my quiz attempts")
     quiz_attempts.add_argument("--course-id", type=int, default=0, help="Optional course id")
     quiz_attempts.add_argument("--quiz-id", type=int, default=0, help="Optional quiz id")
@@ -3290,7 +4197,14 @@ def build_parser() -> argparse.ArgumentParser:
     resources_sub = resources_parser.add_subparsers(dest="_resources_command")
     resources_list = add_parser(resources_sub, "list", description="List resource-style modules in a course", aliases=["ls"])
     resources_list.add_argument("--course-id", type=int, required=True, help="Course id")
+    resources_list.add_argument("--limit", type=int, default=0, help="Maximum rows to return (0 means all)")
+    resources_list.add_argument("--offset", type=int, default=0, help="Result offset for pagination")
     resources_list.set_defaults(handler=command_resources_list, command_path=["resources", "list"])
+    resources_get = add_parser(resources_sub, "get", description="Get one resource-style module", aliases=["fetch"])
+    resources_get.add_argument("--course-id", type=int, required=True, help="Course id")
+    resources_get.add_argument("--cmid", type=int, required=True, help="Course module id")
+    resources_get.add_argument("--no-content", action="store_true", help="Skip detail-content fetch and return list-surface fields only")
+    resources_get.set_defaults(handler=command_resources_get, command_path=["resources", "get"])
 
     forum_parser = add_parser(subparsers, "forum", description="Forum helpers")
     forum_sub = forum_parser.add_subparsers(dest="_forum_command")
@@ -3298,6 +4212,7 @@ def build_parser() -> argparse.ArgumentParser:
     forum_discussions.add_argument("--course-id", type=int, default=0, help="Optional course id")
     forum_discussions.add_argument("--forum-id", type=int, default=0, help="Optional forum id")
     forum_discussions.add_argument("--limit", type=int, default=20, help="Maximum discussions to return")
+    forum_discussions.add_argument("--offset", type=int, default=0, help="Result offset for pagination")
     forum_discussions.set_defaults(handler=command_forum_discussions, command_path=["forum", "discussions"])
     forum_create = add_parser(forum_sub, "create-discussion", description="Create a forum discussion")
     forum_create.add_argument("--idempotency-key", required=True, help="Client idempotency key")
@@ -3340,6 +4255,7 @@ def build_parser() -> argparse.ArgumentParser:
     notifications_sub = notifications_parser.add_subparsers(dest="_notifications_command")
     notifications_list = add_parser(notifications_sub, "list", description="List notifications for current user", aliases=["ls"])
     notifications_list.add_argument("--limit-from", type=int, default=0, help="Pagination offset")
+    notifications_list.add_argument("--offset", type=int, default=None, help="Pagination offset (alias of --limit-from)")
     notifications_list.add_argument("--limit", type=int, default=50, help="Maximum notifications to return")
     notifications_list.add_argument("--unread-only", action="store_true", help="Return unread notifications only")
     notifications_list.set_defaults(handler=command_notifications_list, command_path=["notifications", "list"])
@@ -3355,6 +4271,47 @@ def build_parser() -> argparse.ArgumentParser:
     progress_course = add_parser(progress_sub, "course", description="Show my course progress")
     progress_course.add_argument("--course-id", type=int, default=0, help="Optional course id")
     progress_course.set_defaults(handler=command_progress_course, command_path=["progress", "course"])
+
+    mathstate_parser = add_parser(subparsers, "mathstate", description="Math learning state helpers")
+    mathstate_sub = mathstate_parser.add_subparsers(dest="_mathstate_command")
+
+    mathstate_kp = add_parser(mathstate_sub, "kp-upsert", description="Upsert standard knowledge-point records")
+    mathstate_kp.add_argument("--input", default="", help="JSON file path containing items array (or - for stdin)")
+    mathstate_kp.add_argument("--item-json", action="append", default=[], help="Inline JSON object for one knowledge-point item")
+    mathstate_kp.set_defaults(handler=command_mathstate_kp_upsert, command_path=["mathstate", "kp-upsert"])
+
+    mathstate_qtype = add_parser(mathstate_sub, "qtype-upsert", description="Upsert standard question-type records")
+    mathstate_qtype.add_argument("--input", default="", help="JSON file path containing items array (or - for stdin)")
+    mathstate_qtype.add_argument("--item-json", action="append", default=[], help="Inline JSON object for one question-type item")
+    mathstate_qtype.set_defaults(handler=command_mathstate_qtype_upsert, command_path=["mathstate", "qtype-upsert"])
+
+    mathstate_map = add_parser(mathstate_sub, "question-map-upsert", description="Upsert Moodle question mappings to qg/kg")
+    mathstate_map.add_argument("--input", default="", help="JSON file path containing items array (or - for stdin)")
+    mathstate_map.add_argument("--item-json", action="append", default=[], help="Inline JSON object for one mapping item")
+    mathstate_map.set_defaults(handler=command_mathstate_question_map_upsert, command_path=["mathstate", "question-map-upsert"])
+
+    mathstate_evidence = add_parser(mathstate_sub, "evidence-ingest", description="Ingest evidence and update mastery state")
+    mathstate_evidence.add_argument("--input", default="", help="JSON file path containing items array (or - for stdin)")
+    mathstate_evidence.add_argument("--item-json", action="append", default=[], help="Inline JSON object for one evidence item")
+    mathstate_evidence.set_defaults(handler=command_mathstate_evidence_ingest, command_path=["mathstate", "evidence-ingest"])
+
+    mathstate_summary = add_parser(mathstate_sub, "student-summary", description="Show one student's math mastery summary")
+    mathstate_summary.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_summary.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_summary.add_argument("--include-kp-states", action="store_true", default=True, help="Include knowledge-point states")
+    mathstate_summary.add_argument("--no-include-kp-states", action="store_false", dest="include_kp_states", help="Do not include knowledge-point states")
+    mathstate_summary.add_argument("--include-qtype-states", action="store_true", default=True, help="Include question-type states")
+    mathstate_summary.add_argument("--no-include-qtype-states", action="store_false", dest="include_qtype_states", help="Do not include question-type states")
+    mathstate_summary.add_argument("--include-due-tasks", action="store_true", default=True, help="Include due tasks")
+    mathstate_summary.add_argument("--no-include-due-tasks", action="store_false", dest="include_due_tasks", help="Do not include due tasks")
+    mathstate_summary.set_defaults(handler=command_mathstate_student_summary, command_path=["mathstate", "student-summary"])
+
+    mathstate_due = add_parser(mathstate_sub, "reviews-due", description="List due review tasks for a student")
+    mathstate_due.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_due.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_due.add_argument("--limit", type=int, default=50, help="Maximum tasks to return")
+    mathstate_due.add_argument("--due-before", type=int, default=0, help="Upper due timestamp, 0 means now")
+    mathstate_due.set_defaults(handler=command_mathstate_reviews_due, command_path=["mathstate", "reviews-due"])
 
     return parser
 

@@ -64,16 +64,22 @@ Important:
 - `whoami`
 - `context get`
 - `catalog get`
+- `search global`
+- `search course`
 - `courses list`
+- `courses get`
 - `courses outline`
 - `activities list`
 - `activities due`
+- `activities get`
 - `activities detail`
 - `assignments list`
+- `assignments get`
 - `assignments status`
 - `assignments save-draft`
 - `assignments submit-final`
 - `resources list`
+- `resources get` (alias: `resources fetch`)
 - `forum discussions`
 - `forum create-discussion`
 - `forum reply`
@@ -82,6 +88,12 @@ Important:
 - `notifications list`
 - `grades overview`
 - `progress course`
+- `mathstate kp-upsert`
+- `mathstate qtype-upsert`
+- `mathstate question-map-upsert`
+- `mathstate evidence-ingest`
+- `mathstate student-summary`
+- `mathstate reviews-due`
 - `calendar list`
 - `calendar upsert-plan`
 - `questions categories`
@@ -89,6 +101,7 @@ Important:
 - `questions pick-random`
 - `questions render-html`
 - `quiz list`
+- `quiz get`
 - `quiz attempts`
 - `quiz start`
 - `quiz attempt-data`
@@ -117,6 +130,14 @@ Non-interactive start + complete later:
 
 ```bash
 bin/moodle auth login --name prod --no-wait
+```
+
+Default human output (no `--json`) prints verification URL and resume command directly:
+
+```text
+Open this URL to approve CLI login:
+http://<host>/local/aiagentapi/device_verify.php?user_code=XXXX-XXXX
+Resume command: moodle auth login --device-code <DEVICE_CODE> --name <profile>
 ```
 
 Username/password fallback:
@@ -153,6 +174,26 @@ Most normalized read commands return:
 
 For list-oriented commands, `data.items` is provided as a generic array alias for agent consumption, while domain keys are preserved (`courses`, `activities`, `quizzes`, etc.).
 
+For `search global` / `search course`, pagination metadata is included in both `data.paging` and `meta`:
+
+- `offset`
+- `limit`
+- `total_count`
+- `has_more`
+- `next_offset`
+
+For core list commands (`courses/activities/resources/assignments/quiz list`), client-side pagination is also available:
+
+- `--offset` (default `0`)
+- `--limit` (default `0`, meaning all rows from offset)
+- response `meta` includes the same pagination fields (`total_count`, `has_more`, `next_offset`, etc.)
+
+For `questions search`, `forum discussions`, and `notifications list`, pagination is also available:
+
+- `questions search`: `--offset` + `--limit` (windowed fetch + stable page slice)
+- `forum discussions`: `--offset` + `--limit` (windowed fetch + stable page slice)
+- `notifications list`: `--offset` (alias of legacy `--limit-from`) + `--limit`
+
 ### Error envelope
 
 In machine modes (`--json`, `--format json|table|csv|ndjson`, or non-TTY stderr), errors are emitted as structured JSON:
@@ -173,15 +214,22 @@ In machine modes (`--json`, `--format json|table|csv|ndjson`, or non-TTY stderr)
 
 The following commands currently use normalized resource output with `meta.primary_resource` and `data.items`:
 
+- `search global`
+- `search course`
 - `courses list`
+- `courses get`
 - `courses outline`
 - `activities list`
 - `activities due`
+- `activities get`
 - `activities detail`
 - `resources list`
+- `resources get`
 - `quiz list`
+- `quiz get`
 - `quiz attempts`
 - `assignments list`
+- `assignments get`
 - `assignments status`
 - `calendar list`
 - `forum discussions`
@@ -189,6 +237,8 @@ The following commands currently use normalized resource output with `meta.prima
 - `questions search`
 - `grades overview`
 - `progress course`
+
+`mathstate student-summary` and `mathstate reviews-due` currently return plugin-native JSON structures rather than the normalized resource envelope. This is intentional for now because they expose state aggregates and review-task collections directly from `local_mathstate`.
 
 ## Format modes
 
@@ -209,8 +259,54 @@ bin/moodle --format csv notifications list --limit 20
 ## Permission model
 
 - Authorization is enforced server-side by Moodle capability checks in `local_aiagentapi`.
+- `mathstate` commands are enforced server-side by `local_mathstate` capability checks plus course visibility checks.
 - CLI output normalization does not grant extra access.
 - Effective permissions are the same as the authenticated Moodle user token.
+
+## Mathstate
+
+`mathstate` is the CLI surface for `/Users/wonder/Documents/moodle/public/local/mathstate`.
+
+Supported commands:
+
+- `mathstate kp-upsert`
+- `mathstate qtype-upsert`
+- `mathstate question-map-upsert`
+- `mathstate evidence-ingest`
+- `mathstate student-summary`
+- `mathstate reviews-due`
+
+Examples:
+
+```bash
+bin/moodle --env-file .env.local --json \
+  mathstate kp-upsert \
+  --item-json '{"kg_id":"kp.demo.1","name":"集合概念"}'
+
+bin/moodle --env-file .env.local --json \
+  mathstate qtype-upsert \
+  --item-json '{"qg_id":"qg.demo.1","name":"集合概念题","knowledge_points":["kp.demo.1"]}'
+
+bin/moodle --env-file .env.local --json \
+  mathstate question-map-upsert \
+  --item-json '{"questionid":1,"qg_id":"qg.demo.1","kg_ids":["kp.demo.1"],"mapping_source":"manual","mapping_confidence":95}'
+
+bin/moodle --env-file .env.local --json \
+  mathstate evidence-ingest \
+  --item-json '{"userid":3,"courseid":3,"questionid":1,"result":"wrong","score":0,"maxscore":1}'
+
+bin/moodle --env-file .env.local --json \
+  mathstate student-summary --course-id 3 --user-id 3
+
+bin/moodle --env-file .env.local --json \
+  mathstate reviews-due --course-id 3 --user-id 3 --limit 20
+```
+
+Notes:
+
+- Batch write commands accept either `--input <json>` or repeated `--item-json`.
+- `student-summary` is course-scoped. Querying your own state requires course access; querying another user requires the `local/mathstate:view` capability in addition to course access.
+- `reviews-due` returns due review/remediation tasks ordered by priority and due time.
 
 ## Examples
 
@@ -245,11 +341,24 @@ bin/moodle --env-file .env.local --json courses list
 bin/moodle --env-file .env.local --json courses outline --course-id 12
 ```
 
+### Get normalized course detail (outline envelope)
+
+```bash
+bin/moodle --env-file .env.local --json courses get --course-id 12
+```
+
 ### List visible activities in a course
 
 ```bash
 bin/moodle --env-file .env.local --json \
   activities list --course-id 12
+```
+
+Paged:
+
+```bash
+bin/moodle --env-file .env.local --json \
+  activities list --course-id 12 --limit 20 --offset 20
 ```
 
 ### List assignments in a course
@@ -259,11 +368,88 @@ bin/moodle --env-file .env.local --json \
   assignments list --course-id 12
 ```
 
+Paged:
+
+```bash
+bin/moodle --env-file .env.local --json \
+  assignments list --course-id 12 --limit 20 --offset 0
+```
+
+### Search in one course
+
+```bash
+bin/moodle --env-file .env.local --json \
+  search course --course-id 12 --query 测试 --limit 20
+```
+
+Next page:
+
+```bash
+bin/moodle --env-file .env.local --json \
+  search course --course-id 12 --query 测试 --limit 20 --offset 20
+```
+
+### Search globally with kind filters
+
+```bash
+bin/moodle --env-file .env.local --json \
+  search global --query 试听 --kind course --kind resource --limit 20
+```
+
+### Get one resource with detail content
+
+```bash
+bin/moodle --env-file .env.local --json \
+  resources get --course-id 12 --cmid 701
+```
+
+Skip detail-content fetch:
+
+```bash
+bin/moodle --env-file .env.local --json \
+  resources get --course-id 12 --cmid 701 --no-content
+```
+
+### Get one assignment + my status
+
+```bash
+bin/moodle --env-file .env.local --json \
+  assignments get --course-id 12 --assign-id 401
+```
+
+### Get one quiz + my attempts summary
+
+```bash
+bin/moodle --env-file .env.local --json \
+  quiz get --course-id 12 --quiz-id 666
+```
+
 ### Show my assignment status
 
 ```bash
 bin/moodle --env-file .env.local --json \
   assignments status --course-id 12
+```
+
+### Search questions with pagination
+
+```bash
+bin/moodle --env-file .env.local --json \
+  questions search --course-id 12 --query 函数 --limit 20 --offset 20
+```
+
+### List forum discussions with pagination
+
+```bash
+bin/moodle --env-file .env.local --json \
+  forum discussions --course-id 12 --limit 20 --offset 20
+```
+
+### List notifications with pagination
+
+```bash
+bin/moodle --env-file .env.local --json \
+  notifications list --limit 20 --offset 40
 ```
 
 ### Save an assignment draft
