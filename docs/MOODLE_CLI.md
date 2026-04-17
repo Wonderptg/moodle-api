@@ -21,6 +21,12 @@ Important:
 - `/Users/wonder/Documents/moodle/scripts/moodle_cli.py`
 - `/Users/wonder/Documents/moodle/bin/moodle`
 
+When this CLI is used inside `D:\math-markdown`, prefer the project entrypoint:
+
+- [D:\math-markdown\apps\lobster-workbench\bin\moodle.cmd](</D:/math-markdown/apps/lobster-workbench/bin/moodle.cmd>)
+
+The wrapper keeps the project on a single config source and avoids confusion between direct CLI defaults and project-level profile defaults.
+
 ## Root flags
 
 - `--config-dir`

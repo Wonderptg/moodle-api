@@ -135,6 +135,9 @@ def utc_now_iso() -> str:
 
 
 def resolve_default_config_dir() -> str:
+    legacy_dir = os.path.abspath(os.path.expanduser("~/.moodle-cli"))
+    if os.path.exists(os.path.join(legacy_dir, "config.json")):
+        return legacy_dir
     xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
     if xdg:
         return os.path.join(os.path.expanduser(xdg), "moodle-cli")
@@ -163,6 +166,42 @@ def blank_cli_config() -> Dict[str, Any]:
     }
 
 
+def normalize_legacy_cli_config(loaded: Dict[str, Any]) -> Dict[str, Any]:
+    config = blank_cli_config()
+    config["version"] = int(loaded.get("version") or CONFIG_SCHEMA_VERSION)
+    config["current_profile"] = str(loaded.get("active_profile") or "")
+
+    profiles = loaded.get("profiles")
+    if not isinstance(profiles, dict):
+        return config
+
+    normalized_profiles: Dict[str, Any] = {}
+    for name, value in profiles.items():
+        if not isinstance(name, str) or not isinstance(value, dict):
+            continue
+
+        last_context = value.get("last_context")
+        user = last_context.get("user") if isinstance(last_context, dict) else {}
+        if not isinstance(user, dict):
+            user = {}
+
+        token = str(value.get("token") or "")
+        normalized_profiles[name] = {
+            "base_url": str(value.get("base_url") or ""),
+            "service": str(value.get("service") or value.get("service_shortname") or DEFAULT_SERVICE_SHORTNAME),
+            "username": str(value.get("username") or ""),
+            "full_name": str(value.get("full_name") or user.get("fullname") or ""),
+            "user_id": int(user.get("userid") or value.get("user_id") or 0),
+            "token_storage": "file" if token else "",
+            "token": token,
+            "last_login_at": str(value.get("granted_at") or ""),
+            "last_verified_at": str(value.get("updated_at") or ""),
+        }
+
+    config["profiles"] = normalized_profiles
+    return config
+
+
 def normalize_profile_name(name: str) -> str:
     value = (name or "").strip()
     if not value:
@@ -188,6 +227,8 @@ def load_cli_config(config_dir: str) -> Dict[str, Any]:
         raise CliError(f"cannot read CLI config: {e}", EXIT_CONFIG) from e
     if not isinstance(loaded, dict):
         raise CliError("invalid CLI config: expected top-level object", EXIT_CONFIG)
+    if "active_profile" in loaded and "current_profile" not in loaded:
+        return normalize_legacy_cli_config(loaded)
     config = blank_cli_config()
     config["version"] = int(loaded.get("version") or CONFIG_SCHEMA_VERSION)
     config["current_profile"] = str(loaded.get("current_profile") or "")
@@ -3724,7 +3765,17 @@ def command_doctor(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
         add("profile", "pass", f'profile "{profile_name}" loaded')
     else:
         add("profile", "fail", f'profile "{profile_name}" not found', "run: moodle config init --name <profile> --base-url <url>")
-        return {"ok": False, "profile": profile_name, "checks": checks}
+        return {
+            "ok": False,
+            "entrypoint": os.environ.get("MOODLE_CLI_ENTRYPOINT", "direct"),
+            "profile": profile_name,
+            "current_profile": str(args.cli_config.get("current_profile") or ""),
+            "config_path": args.config_path,
+            "base_url_source": getattr(args, "base_url_source", "") or "missing",
+            "service_source": getattr(args, "service_source", "") or "missing",
+            "token_source": getattr(args, "token_source", "") or "missing",
+            "checks": checks,
+        }
 
     base_url = normalize_base_url(args.base_url or str(profile.get("base_url") or ""))
     if base_url:
@@ -3735,15 +3786,28 @@ def command_doctor(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     service = args.service or str(profile.get("service") or DEFAULT_SERVICE_SHORTNAME)
     add("service", "pass", service)
 
-    token = args.token or resolve_profile_token(profile_name, profile)
+    token_source = getattr(args, "token_source", "") or "missing"
+    token = args.token or ""
     if token:
-        add("token_local", "pass", f"token available via {str(profile.get('token_storage') or 'file')}")
+        add("token_local", "pass", f"token available via {token_source}")
     else:
         add("token_local", "fail", "no stored token", "run: moodle auth login")
 
     if args.offline:
         add("network", "skip", "skipped (--offline)")
-        return {"ok": all(item["status"] != "fail" for item in checks), "profile": profile_name, "checks": checks}
+        return {
+            "ok": all(item["status"] != "fail" for item in checks),
+            "entrypoint": os.environ.get("MOODLE_CLI_ENTRYPOINT", "direct"),
+            "profile": profile_name,
+            "current_profile": str(args.cli_config.get("current_profile") or ""),
+            "config_path": args.config_path,
+            "base_url": base_url,
+            "base_url_source": getattr(args, "base_url_source", "") or "missing",
+            "service": service,
+            "service_source": getattr(args, "service_source", "") or "missing",
+            "token_source": token_source,
+            "checks": checks,
+        }
 
     if base_url:
         for name, url in [
@@ -3777,7 +3841,19 @@ def command_doctor(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     else:
         add("token_verified", "skip", "skipped (missing base_url or token)")
 
-    return {"ok": all(item["status"] != "fail" for item in checks), "profile": profile_name, "checks": checks}
+    return {
+        "ok": all(item["status"] != "fail" for item in checks),
+        "entrypoint": os.environ.get("MOODLE_CLI_ENTRYPOINT", "direct"),
+        "profile": profile_name,
+        "current_profile": str(args.cli_config.get("current_profile") or ""),
+        "config_path": args.config_path,
+        "base_url": base_url,
+        "base_url_source": getattr(args, "base_url_source", "") or "missing",
+        "service": service,
+        "service_source": getattr(args, "service_source", "") or "missing",
+        "token_source": token_source,
+        "checks": checks,
+    }
 
 
 def _schema_type(action: argparse.Action) -> str:
@@ -4331,30 +4407,64 @@ def apply_env_defaults(args: argparse.Namespace) -> argparse.Namespace:
     )
     args.profile = normalize_profile_name(profile_name)
     profile = get_profile(args.cli_config, args.profile)
+    args.base_url_source = ""
+    args.token_source = ""
+    args.service_source = ""
 
     if not args.base_url:
-        args.base_url = (
-            str(profile.get("base_url") or "")
-            or env.get("MOODLE_CLI_BASE_URL")
-            or env.get("MOODLE_BASE_URL")
-            or os.environ.get("MOODLE_CLI_BASE_URL")
-            or os.environ.get("MOODLE_BASE_URL", "")
-        )
+        if str(profile.get("base_url") or ""):
+            args.base_url = str(profile.get("base_url") or "")
+            args.base_url_source = "profile"
+        elif env.get("MOODLE_CLI_BASE_URL"):
+            args.base_url = env["MOODLE_CLI_BASE_URL"]
+            args.base_url_source = "env-file:MOODLE_CLI_BASE_URL"
+        elif env.get("MOODLE_BASE_URL"):
+            args.base_url = env["MOODLE_BASE_URL"]
+            args.base_url_source = "env-file:MOODLE_BASE_URL"
+        elif os.environ.get("MOODLE_CLI_BASE_URL"):
+            args.base_url = os.environ["MOODLE_CLI_BASE_URL"]
+            args.base_url_source = "env:MOODLE_CLI_BASE_URL"
+        else:
+            args.base_url = os.environ.get("MOODLE_BASE_URL", "")
+            if args.base_url:
+                args.base_url_source = "env:MOODLE_BASE_URL"
+    else:
+        args.base_url_source = "flag"
     if not args.token:
-        args.token = (
-            resolve_profile_token(args.profile, profile)
-            or env.get("MOODLE_CLI_TOKEN")
-            or env.get("MOODLE_WS_TOKEN")
-            or os.environ.get("MOODLE_CLI_TOKEN")
-            or os.environ.get("MOODLE_WS_TOKEN", "")
-        )
+        profile_token = resolve_profile_token(args.profile, profile)
+        if profile_token:
+            args.token = profile_token
+            args.token_source = f'profile:{str(profile.get("token_storage") or "file")}'
+        elif env.get("MOODLE_CLI_TOKEN"):
+            args.token = env["MOODLE_CLI_TOKEN"]
+            args.token_source = "env-file:MOODLE_CLI_TOKEN"
+        elif env.get("MOODLE_WS_TOKEN"):
+            args.token = env["MOODLE_WS_TOKEN"]
+            args.token_source = "env-file:MOODLE_WS_TOKEN"
+        elif os.environ.get("MOODLE_CLI_TOKEN"):
+            args.token = os.environ["MOODLE_CLI_TOKEN"]
+            args.token_source = "env:MOODLE_CLI_TOKEN"
+        else:
+            args.token = os.environ.get("MOODLE_WS_TOKEN", "")
+            if args.token:
+                args.token_source = "env:MOODLE_WS_TOKEN"
+    else:
+        args.token_source = "flag"
     if not args.service:
-        args.service = (
-            str(profile.get("service") or "")
-            or env.get("MOODLE_CLI_SERVICE")
-            or os.environ.get("MOODLE_CLI_SERVICE", "")
-            or DEFAULT_SERVICE_SHORTNAME
-        )
+        if str(profile.get("service") or ""):
+            args.service = str(profile.get("service") or "")
+            args.service_source = "profile"
+        elif env.get("MOODLE_CLI_SERVICE"):
+            args.service = env["MOODLE_CLI_SERVICE"]
+            args.service_source = "env-file:MOODLE_CLI_SERVICE"
+        elif os.environ.get("MOODLE_CLI_SERVICE"):
+            args.service = os.environ["MOODLE_CLI_SERVICE"]
+            args.service_source = "env:MOODLE_CLI_SERVICE"
+        else:
+            args.service = DEFAULT_SERVICE_SHORTNAME
+            args.service_source = "default"
+    else:
+        args.service_source = "flag"
     args.base_url = normalize_base_url(args.base_url) if args.base_url else ""
     if env_bool("MOODLE_CLI_AUTO_JSON") and not args.json and not args.plain and not sys.stdout.isatty():
         args.json = True

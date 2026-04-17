@@ -164,6 +164,16 @@ Important:
 - `/Users/wonder/Documents/moodle/bin/moodle`
 - Detailed guide: `/Users/wonder/Documents/moodle/docs/MOODLE_CLI.md`
 
+When this codebase is consumed from `D:\math-markdown`, the project entrypoint is:
+
+- [D:\math-markdown\apps\lobster-workbench\bin\moodle.cmd](</D:/math-markdown/apps/lobster-workbench/bin/moodle.cmd>)
+
+That wrapper now exists mainly to:
+
+- keep one project-level entrypoint
+- keep one project-level config directory
+- reduce confusion between direct CLI defaults and project wrapper defaults
+
 ## CLI 快速使用（每天按这个流程走）
 
 统一入口命令：`bin/moodle`。
