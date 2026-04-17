@@ -2022,6 +2022,31 @@ def resolve_plan_items(args: argparse.Namespace) -> List[Dict[str, Any]]:
     return items
 
 
+def resolve_batch_items(args: argparse.Namespace, *, label: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    if getattr(args, "input", ""):
+        loaded = load_json_file(args.input)
+        if isinstance(loaded, dict) and isinstance(loaded.get("items"), list):
+            loaded = loaded["items"]
+        if not isinstance(loaded, list):
+            raise CliError("--input must contain a JSON array or an object with an 'items' array", EXIT_USAGE)
+        for item in loaded:
+            if not isinstance(item, dict):
+                raise CliError(f"{label} input items must be objects", EXIT_USAGE)
+            items.append(item)
+    for raw in getattr(args, "item_json", []) or []:
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise CliError(f"invalid --item-json payload: {e}", EXIT_USAGE) from e
+        if not isinstance(item, dict):
+            raise CliError("--item-json must decode to an object", EXIT_USAGE)
+        items.append(item)
+    if not items:
+        raise CliError(f"{label} requires --input or at least one --item-json", EXIT_USAGE)
+    return items
+
+
 def _pair_from_object(item: Any, flag_name: str) -> Dict[str, Any]:
     if not isinstance(item, dict):
         raise CliError(f"{flag_name} must decode to an object", EXIT_USAGE)
