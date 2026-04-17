@@ -36,6 +36,29 @@ Think of production as four independent parts:
 3. `moodledata`
 4. secrets and server config
 
+## Current production tree reality (confirmed 2026-04-17)
+
+The current Huawei Cloud host has more than one Moodle code tree:
+
+- active site: `http://dzexam.cn`
+- active Apache vhost docroot: `/srv/moodle/current/public`
+- active Moodle code root: `/srv/moodle/current` (Moodle `5.1.2`, `2025100602`)
+- legacy Moodle tree: `/var/www/html/moodle` (Moodle `4.5`, not serving `dzexam.cn`)
+
+Hard rule:
+
+- only deploy/upgrade/register services in `/srv/moodle/current`
+- never run production upgrade commands in `/var/www/html/moodle`
+
+Pre-flight check (must run before every deploy):
+
+```bash
+apachectl -S 2>/dev/null | sed -n '1,140p'
+grep -Rni "DocumentRoot\\|ServerName\\|VirtualHost" /etc/httpd/conf.d /etc/httpd/conf/httpd.conf | sed -n '1,200p'
+php /srv/moodle/current/admin/cli/cfg.php --name=version
+php /var/www/html/moodle/admin/cli/cfg.php --name=version
+```
+
 ## Final architecture for this project
 
 For the current phase of this project, the recommended production architecture is:
@@ -282,13 +305,13 @@ Always backup:
 
 ```bash
 cd /srv/moodle/current
-php public/admin/cli/upgrade.php --non-interactive
+php admin/cli/upgrade.php --non-interactive
 ```
 
 If permissions need repair:
 
 ```bash
-php public/admin/cli/purge_caches.php
+php admin/cli/purge_caches.php
 ```
 
 ### 3. Re-register `local_aiagentapi` functions

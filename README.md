@@ -29,6 +29,7 @@ We have also validated this on a real upgraded course copy:
 - real course tested: `course 92 / 2026四类综合`
 - real study plan written to calendar
 - real quiz lifecycle verified on `quiz 431 / 政治思想和职业道德`
+- mathstate runtime storage, CLI commands, and WS smoke tooling are now landed locally in this repo
 
 ## Repository role
 
@@ -45,6 +46,29 @@ Architecture rule:
 - CLI stays thin
 - skills describe how to use capabilities
 - future frontend should call an agent gateway, not Moodle directly
+
+## Huawei Cloud online runtime reality
+
+Confirmed on `2026-04-17`:
+
+- active site domain: `http://dzexam.cn`
+- active web docroot: `/srv/moodle/current/public`
+- active Moodle code root: `/srv/moodle/current` (Moodle `5.1.2`, version `2025100602`)
+- legacy tree also exists: `/var/www/html/moodle` (older `4.5`, not serving `dzexam.cn`)
+
+Deployment guardrail:
+
+- deploy, upgrade, and service registration must run in `/srv/moodle/current`
+- do not run upgrade scripts under `/var/www/html/moodle`
+
+Pre-deploy quick check:
+
+```bash
+apachectl -S 2>/dev/null | sed -n '1,120p'
+grep -Rni "DocumentRoot\\|ServerName\\|VirtualHost" /etc/httpd/conf.d /etc/httpd/conf/httpd.conf | sed -n '1,160p'
+php /srv/moodle/current/admin/cli/cfg.php --name=version
+php /var/www/html/moodle/admin/cli/cfg.php --name=version
+```
 
 ## Local environments
 
@@ -170,6 +194,8 @@ Important:
 
 - `/Users/wonder/Documents/moodle/scripts/test_moodle_cli.py`
 - `/Users/wonder/Documents/moodle/scripts/test_moodle_live_cli.py`
+- `/Users/wonder/Documents/moodle/scripts/mathstate_ws_smoke_test.py`
+- `/Users/wonder/Documents/moodle/scripts/cleanup_mathstate_smoke.php`
 
 ### Skills
 
@@ -257,6 +283,7 @@ These are the documents worth reading first.
 - `/Users/wonder/Documents/moodle/docs/OPENCLAW_FRONTEND_ARCHITECTURE.md`
 - `/Users/wonder/Documents/moodle/docs/COURSE_92_STUDY_PLAN.md`
 - `/Users/wonder/Documents/moodle/docs/NEXT_STEPS.md`
+- `/Users/wonder/Documents/moodle/docs/HUAWEICLOUD_SERVER_DEPLOYMENT_PLAN.md`
 
 ## Known pitfalls and lessons learned
 

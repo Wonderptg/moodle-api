@@ -82,6 +82,18 @@ Important:
 - `notifications list`
 - `grades overview`
 - `progress course`
+- `mathstate kp-upsert`
+- `mathstate qtype-upsert`
+- `mathstate question-map-upsert`
+- `mathstate question-map-sync`
+- `mathstate question-map-lookup`
+- `mathstate evidence-ingest`
+- `mathstate lesson-session-upsert`
+- `mathstate learning-event-record`
+- `mathstate review-upsert`
+- `mathstate doc-job-upsert`
+- `mathstate student-summary`
+- `mathstate reviews-due`
 - `calendar list`
 - `calendar upsert-plan`
 - `questions categories`
@@ -211,6 +223,44 @@ bin/moodle --format csv notifications list --limit 20
 - Authorization is enforced server-side by Moodle capability checks in `local_aiagentapi`.
 - CLI output normalization does not grant extra access.
 - Effective permissions are the same as the authenticated Moodle user token.
+
+## Mathstate
+
+`mathstate` is the CLI surface for `/Users/wonder/Documents/moodle/public/local/mathstate`.
+
+Supported commands:
+
+- `mathstate kp-upsert`
+- `mathstate qtype-upsert`
+- `mathstate question-map-upsert`
+- `mathstate question-map-sync`
+- `mathstate question-map-lookup`
+- `mathstate evidence-ingest`
+- `mathstate lesson-session-upsert`
+- `mathstate learning-event-record`
+- `mathstate review-upsert`
+- `mathstate doc-job-upsert`
+- `mathstate student-summary`
+- `mathstate reviews-due`
+
+Examples:
+
+```bash
+bin/moodle --env-file .env.local --json \
+  mathstate kp-upsert \
+  --item-json '{"kg_id":"kp.demo.1","name":"集合概念"}'
+
+bin/moodle --env-file .env.local --json \
+  mathstate qtype-upsert \
+  --item-json '{"qg_id":"qg.demo.1","name":"集合概念题","knowledge_points":["kp.demo.1"]}'
+
+bin/moodle --env-file .env.local --json \
+  mathstate question-map-sync \
+  --item-json '{"source_id":"w2m-math-smoke-1","questionid":1,"questionbankentryid":1,"qg_id":"qg.demo.1","kg_ids":["kp.demo.1"],"lesson_key":"course2_lesson01","mapping_source":"sidecar"}'
+
+bin/moodle --env-file .env.local --json \
+  mathstate reviews-due --course-id 108 --user-id 2 --limit 20
+```
 
 ## Examples
 
