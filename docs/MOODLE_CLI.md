@@ -92,6 +92,12 @@ Important:
 - `mathstate learning-event-record`
 - `mathstate review-upsert`
 - `mathstate doc-job-upsert`
+- `mathstate lesson-start`
+- `mathstate lesson-log-append`
+- `mathstate lesson-finish`
+- `mathstate review-complete`
+- `mathstate doc-publish-request`
+- `mathstate next-recommendation`
 - `mathstate student-summary`
 - `mathstate reviews-due`
 - `calendar list`
@@ -240,6 +246,12 @@ Supported commands:
 - `mathstate learning-event-record`
 - `mathstate review-upsert`
 - `mathstate doc-job-upsert`
+- `mathstate lesson-start`
+- `mathstate lesson-log-append`
+- `mathstate lesson-finish`
+- `mathstate review-complete`
+- `mathstate doc-publish-request`
+- `mathstate next-recommendation`
 - `mathstate student-summary`
 - `mathstate reviews-due`
 
@@ -260,6 +272,12 @@ bin/moodle --env-file .env.local --json \
 
 bin/moodle --env-file .env.local --json \
   mathstate reviews-due --course-id 108 --user-id 2 --limit 20
+
+bin/moodle --env-file .env.local --json \
+  mathstate lesson-start --course-id 108 --user-id 2 --lesson-key course108_lesson01
+
+bin/moodle --env-file .env.local --json \
+  mathstate next-recommendation --course-id 108 --user-id 2 --limit 5
 ```
 
 ## Examples

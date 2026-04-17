@@ -2599,6 +2599,91 @@ def command_mathstate_doc_job_upsert(cli: "MoodleCLI", args: argparse.Namespace)
     })
 
 
+def command_mathstate_lesson_start(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_lesson_start", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "session_key": args.session_key,
+        "lesson_key": args.lesson_key,
+        "cmid": args.cmid,
+        "source": args.source,
+        "progress_json": args.progress_json,
+        "summary_json": args.summary_json,
+    })
+
+
+def command_mathstate_lesson_finish(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_lesson_finish", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "session_key": args.session_key,
+        "status": args.status,
+        "ended_at": args.ended_at,
+        "source": args.source,
+        "progress_json": args.progress_json,
+        "summary_json": args.summary_json,
+    })
+
+
+def command_mathstate_lesson_log_append(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_lesson_log_append", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "session_key": args.session_key,
+        "lesson_key": args.lesson_key,
+        "questionid": args.question_id,
+        "questionusageid": args.questionusage_id,
+        "cmid": args.cmid,
+        "qg_id": args.qg_id,
+        "kg_ids": args.kg_id,
+        "event_type": args.event_type,
+        "result": args.result,
+        "score": args.score,
+        "maxscore": args.maxscore,
+        "source": args.source,
+        "payload_json": args.payload_json,
+        "occurred_at": args.occurred_at,
+    })
+
+
+def command_mathstate_review_complete(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_review_complete", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "review_id": args.review_id,
+        "target_type": args.target_type,
+        "target_ref": args.target_ref,
+        "status": args.status,
+        "completed_at": args.completed_at,
+        "linked_doc_url": args.linked_doc_url,
+        "note": args.note,
+    })
+
+
+def command_mathstate_doc_publish_request(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_doc_publish_request", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "job_key": args.job_key,
+        "target_type": args.target_type,
+        "target_ref": args.target_ref,
+        "doc_ref": args.doc_ref,
+        "provider": args.provider,
+        "job_type": args.job_type,
+        "request_payload_json": args.request_json,
+        "queued_at": args.queued_at,
+    })
+
+
+def command_mathstate_next_recommendation(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_next_recommendation", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "limit": args.limit,
+        "due_before": args.due_before,
+    })
+
+
 def command_mathstate_student_summary(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     return cli.call("local_mathstate_student_summary", {
         "courseid": args.course_id,
@@ -3521,6 +3606,79 @@ def build_parser() -> argparse.ArgumentParser:
     mathstate_doc_job.add_argument("--input", default="", help="JSON file path containing items array (or - for stdin)")
     mathstate_doc_job.add_argument("--item-json", action="append", default=[], help="Inline JSON object for one doc job item")
     mathstate_doc_job.set_defaults(handler=command_mathstate_doc_job_upsert, command_path=["mathstate", "doc-job-upsert"])
+
+    mathstate_lesson_start = add_parser(mathstate_sub, "lesson-start", description="Start or resume one lesson session")
+    mathstate_lesson_start.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_lesson_start.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_lesson_start.add_argument("--session-key", default="", help="Session key, empty means auto-generate")
+    mathstate_lesson_start.add_argument("--lesson-key", default="", help="Lesson key")
+    mathstate_lesson_start.add_argument("--cmid", type=int, default=0, help="Course module id")
+    mathstate_lesson_start.add_argument("--source", default="agent", help="Source label")
+    mathstate_lesson_start.add_argument("--progress-json", default="", help="Progress JSON object string")
+    mathstate_lesson_start.add_argument("--summary-json", default="", help="Summary JSON object string")
+    mathstate_lesson_start.set_defaults(handler=command_mathstate_lesson_start, command_path=["mathstate", "lesson-start"])
+
+    mathstate_lesson_finish = add_parser(mathstate_sub, "lesson-finish", description="Finish one lesson session")
+    mathstate_lesson_finish.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_lesson_finish.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_lesson_finish.add_argument("--session-key", required=True, help="Session key")
+    mathstate_lesson_finish.add_argument("--status", default="completed", help="Final status")
+    mathstate_lesson_finish.add_argument("--ended-at", type=int, default=0, help="End timestamp, 0 means now")
+    mathstate_lesson_finish.add_argument("--source", default="agent", help="Source label")
+    mathstate_lesson_finish.add_argument("--progress-json", default="", help="Progress JSON object string")
+    mathstate_lesson_finish.add_argument("--summary-json", default="", help="Summary JSON object string")
+    mathstate_lesson_finish.set_defaults(handler=command_mathstate_lesson_finish, command_path=["mathstate", "lesson-finish"])
+
+    mathstate_lesson_log = add_parser(mathstate_sub, "lesson-log-append", description="Append one learning event")
+    mathstate_lesson_log.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_lesson_log.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_lesson_log.add_argument("--session-key", default="", help="Session key")
+    mathstate_lesson_log.add_argument("--lesson-key", default="", help="Lesson key")
+    mathstate_lesson_log.add_argument("--question-id", type=int, default=0, help="Question id")
+    mathstate_lesson_log.add_argument("--questionusage-id", type=int, default=0, help="Question usage id")
+    mathstate_lesson_log.add_argument("--cmid", type=int, default=0, help="Course module id")
+    mathstate_lesson_log.add_argument("--qg-id", default="", help="Question-group id")
+    mathstate_lesson_log.add_argument("--kg-id", action="append", default=[], help="Knowledge-point id (repeatable)")
+    mathstate_lesson_log.add_argument("--event-type", default="practice", help="Event type")
+    mathstate_lesson_log.add_argument("--result", default="", help="Result (correct/partial/wrong/skipped)")
+    mathstate_lesson_log.add_argument("--score", type=float, default=0.0, help="Score")
+    mathstate_lesson_log.add_argument("--maxscore", type=float, default=0.0, help="Max score")
+    mathstate_lesson_log.add_argument("--source", default="agent", help="Source label")
+    mathstate_lesson_log.add_argument("--payload-json", default="", help="Payload JSON object string")
+    mathstate_lesson_log.add_argument("--occurred-at", type=int, default=0, help="Event timestamp, 0 means now")
+    mathstate_lesson_log.set_defaults(handler=command_mathstate_lesson_log_append, command_path=["mathstate", "lesson-log-append"])
+
+    mathstate_review_complete = add_parser(mathstate_sub, "review-complete", description="Mark one review task as complete")
+    mathstate_review_complete.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_review_complete.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_review_complete.add_argument("--review-id", type=int, default=0, help="Review task id")
+    mathstate_review_complete.add_argument("--target-type", default="", help="Fallback target type")
+    mathstate_review_complete.add_argument("--target-ref", default="", help="Fallback target reference")
+    mathstate_review_complete.add_argument("--status", default="done", help="Completion status")
+    mathstate_review_complete.add_argument("--completed-at", type=int, default=0, help="Completion timestamp, 0 means now")
+    mathstate_review_complete.add_argument("--linked-doc-url", default="", help="Linked document URL")
+    mathstate_review_complete.add_argument("--note", default="", help="Completion note")
+    mathstate_review_complete.set_defaults(handler=command_mathstate_review_complete, command_path=["mathstate", "review-complete"])
+
+    mathstate_doc_publish = add_parser(mathstate_sub, "doc-publish-request", description="Create one document publish job request")
+    mathstate_doc_publish.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_doc_publish.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_doc_publish.add_argument("--job-key", default="", help="Job key, empty means auto-generate")
+    mathstate_doc_publish.add_argument("--target-type", default="", help="Target type")
+    mathstate_doc_publish.add_argument("--target-ref", default="", help="Target reference")
+    mathstate_doc_publish.add_argument("--doc-ref", default="", help="Document ref/url")
+    mathstate_doc_publish.add_argument("--provider", default="agent", help="Provider id")
+    mathstate_doc_publish.add_argument("--job-type", default="doc", help="Job type")
+    mathstate_doc_publish.add_argument("--request-json", default="", help="Request payload JSON object string")
+    mathstate_doc_publish.add_argument("--queued-at", type=int, default=0, help="Queued timestamp, 0 means now")
+    mathstate_doc_publish.set_defaults(handler=command_mathstate_doc_publish_request, command_path=["mathstate", "doc-publish-request"])
+
+    mathstate_next = add_parser(mathstate_sub, "next-recommendation", description="Get next study recommendations")
+    mathstate_next.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_next.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_next.add_argument("--limit", type=int, default=5, help="Max recommendations")
+    mathstate_next.add_argument("--due-before", type=int, default=0, help="Due upper bound timestamp, 0 means now")
+    mathstate_next.set_defaults(handler=command_mathstate_next_recommendation, command_path=["mathstate", "next-recommendation"])
 
     mathstate_summary = add_parser(mathstate_sub, "student-summary", description="Show one student's math mastery summary")
     mathstate_summary.add_argument("--course-id", type=int, required=True, help="Course id")

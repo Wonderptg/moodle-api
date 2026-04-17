@@ -134,5 +134,10 @@ function xmldb_local_mathstate_upgrade(int $oldversion): bool {
         upgrade_plugin_savepoint(true, 2026041700, 'local', 'mathstate');
     }
 
+    if ($oldversion < 2026041701) {
+        // Runtime student-facing APIs are code-only in this upgrade.
+        upgrade_plugin_savepoint(true, 2026041701, 'local', 'mathstate');
+    }
+
     return true;
 }

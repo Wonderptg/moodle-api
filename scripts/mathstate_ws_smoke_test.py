@@ -9,6 +9,10 @@ Covers:
 4) learning_event_record_batch
 5) review_upsert_batch + reviews_due readback
 6) doc_job_upsert_batch
+7) lesson_start / lesson_log_append / lesson_finish
+8) review_complete
+9) doc_publish_request
+10) next_recommendation
 
 Usage:
   python3 scripts/mathstate_ws_smoke_test.py --env-file .env.local --token <LOCAL_MATHSTATE_TOKEN>
@@ -220,6 +224,35 @@ def call_batch(
     return expect_ok(expect_json(resp, wsfunction), wsfunction)
 
 
+def flatten_params(values: Dict[str, Any]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for key, value in values.items():
+        if isinstance(value, list):
+            for idx, part in enumerate(value):
+                out[f"{key}[{idx}]"] = encode_scalar(part)
+            continue
+        out[key] = encode_scalar(value)
+    return out
+
+
+def call_object(
+    *,
+    base_url: str,
+    token: str,
+    wsfunction: str,
+    params: Dict[str, Any],
+    timeout: float,
+) -> Dict[str, Any]:
+    resp = ws_call(
+        base_url=base_url,
+        token=token,
+        wsfunction=wsfunction,
+        params=flatten_params(params),
+        timeout_s=timeout,
+    )
+    return expect_ok(expect_json(resp, wsfunction), wsfunction)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--env-file", default=".env.local", help="Env file path (default: .env.local)")
@@ -291,7 +324,9 @@ def main() -> int:
     suffix = int(time.time())
     source_id = f"w2m-math-smoke-{suffix}"
     session_key = f"sess-smoke-{suffix}"
+    student_session_key = f"sess-smoke-{suffix}-student"
     job_key = f"docjob-smoke-{suffix}"
+    request_job_key = f"docjob-smoke-{suffix}-request"
     target_ref = f"KG-SMOKE-{suffix}"
     lesson_key = f"course{args.course_id}_lesson_smoke"
     qg_id = f"QG-SMOKE-{suffix}"
@@ -357,6 +392,23 @@ def main() -> int:
             }],
         )
 
+        lesson_start_result = call_object(
+            base_url=base_url,
+            token=token,
+            wsfunction="local_mathstate_lesson_start",
+            timeout=args.timeout,
+            params={
+                "courseid": args.course_id,
+                "userid": args.user_id,
+                "session_key": student_session_key,
+                "lesson_key": lesson_key,
+                "source": "agent",
+                "progress_json": {"step": 1, "total": 2},
+            },
+        )
+        if not lesson_start_result.get("session_key"):
+            raise RuntimeError(f"lesson_start returned no session key: {lesson_start_result}")
+
         event_result = call_batch(
             base_url=base_url,
             token=token,
@@ -382,6 +434,46 @@ def main() -> int:
         event_items = event_result.get("items", [])
         if not event_items:
             raise RuntimeError(f"learning_event_record_batch returned no items: {event_result}")
+
+        lesson_log_result = call_object(
+            base_url=base_url,
+            token=token,
+            wsfunction="local_mathstate_lesson_log_append",
+            timeout=args.timeout,
+            params={
+                "courseid": args.course_id,
+                "userid": args.user_id,
+                "session_key": student_session_key,
+                "lesson_key": lesson_key,
+                "questionid": args.question_id,
+                "qg_id": qg_id,
+                "kg_ids": [target_ref],
+                "event_type": "practice",
+                "result": "correct",
+                "score": 1,
+                "maxscore": 1,
+                "source": "agent",
+                "payload_json": {"mode": "student-smoke"},
+                "occurred_at": now_ts + 1,
+            },
+        )
+        if not lesson_log_result.get("event_id"):
+            raise RuntimeError(f"lesson_log_append returned no event id: {lesson_log_result}")
+
+        lesson_finish_result = call_object(
+            base_url=base_url,
+            token=token,
+            wsfunction="local_mathstate_lesson_finish",
+            timeout=args.timeout,
+            params={
+                "courseid": args.course_id,
+                "userid": args.user_id,
+                "session_key": student_session_key,
+                "status": "completed",
+                "ended_at": now_ts + 2,
+                "summary_json": {"result": "smoke done"},
+            },
+        )
 
         review_result = call_batch(
             base_url=base_url,
@@ -421,6 +513,21 @@ def main() -> int:
         if target_ref not in due_refs:
             raise RuntimeError(f"reviews_due missing inserted target_ref={target_ref}: {due_result}")
 
+        review_complete_result = call_object(
+            base_url=base_url,
+            token=token,
+            wsfunction="local_mathstate_review_complete",
+            timeout=args.timeout,
+            params={
+                "courseid": args.course_id,
+                "userid": args.user_id,
+                "target_type": "kp",
+                "target_ref": target_ref,
+                "status": "done",
+                "note": "smoke complete",
+            },
+        )
+
         doc_job_result = call_batch(
             base_url=base_url,
             token=token,
@@ -442,6 +549,38 @@ def main() -> int:
             }],
         )
 
+        doc_request_result = call_object(
+            base_url=base_url,
+            token=token,
+            wsfunction="local_mathstate_doc_publish_request",
+            timeout=args.timeout,
+            params={
+                "courseid": args.course_id,
+                "userid": args.user_id,
+                "job_key": request_job_key,
+                "target_type": "review",
+                "target_ref": target_ref,
+                "doc_ref": f"docreq-{suffix}",
+                "provider": "agent",
+                "job_type": "summary",
+                "request_payload_json": {"lang": "zh-CN"},
+                "queued_at": now_ts,
+            },
+        )
+
+        next_result = call_object(
+            base_url=base_url,
+            token=token,
+            wsfunction="local_mathstate_next_recommendation",
+            timeout=args.timeout,
+            params={
+                "courseid": args.course_id,
+                "userid": args.user_id,
+                "limit": 5,
+                "due_before": due_ts + 60,
+            },
+        )
+
         summary = {
             "ok": True,
             "base_url": base_url,
@@ -454,10 +593,16 @@ def main() -> int:
             "question_map_sync": sync_result,
             "question_map_lookup_count": lookup_result.get("count", 0),
             "lesson_session": session_result,
+            "lesson_start": lesson_start_result,
             "learning_event": event_result,
+            "lesson_log_append": lesson_log_result,
+            "lesson_finish": lesson_finish_result,
             "review_upsert": review_result,
             "reviews_due_count": due_result.get("count", 0),
+            "review_complete": review_complete_result,
             "doc_job_upsert": doc_job_result,
+            "doc_publish_request": doc_request_result,
+            "next_recommendation_count": next_result.get("count", 0),
         }
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0

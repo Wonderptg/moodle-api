@@ -54,6 +54,24 @@ class local_mathstate_external extends external_api {
         return $context;
     }
 
+    private static function require_course_user_write(int $courseid, int $userid): \context_course {
+        global $USER;
+        $context = self::course_context($courseid);
+        require_capability('moodle/course:view', $context);
+        if ((int)$USER->id !== $userid) {
+            self::system_context(true);
+        }
+        return $context;
+    }
+
+    private static function build_session_key(int $userid, int $courseid): string {
+        return sprintf('session-%d-%d-%d-%s', $userid, $courseid, time(), substr(bin2hex(random_bytes(3)), 0, 6));
+    }
+
+    private static function build_job_key(int $userid, int $courseid): string {
+        return sprintf('docjob-%d-%d-%d-%s', $userid, $courseid, time(), substr(bin2hex(random_bytes(3)), 0, 6));
+    }
+
     private static function clamp_score(float $score): float {
         if ($score < 0.0) {
             return 0.0;
@@ -430,6 +448,19 @@ class local_mathstate_external extends external_api {
             'status' => new external_value(PARAM_RAW, 'Status'),
             'due_at' => new external_value(PARAM_INT, 'Due timestamp', VALUE_OPTIONAL),
             'linked_doc_url' => new external_value(PARAM_RAW, 'Linked document URL', VALUE_OPTIONAL),
+        ]);
+    }
+
+    private static function recommendation_item_structure(): external_single_structure {
+        return new external_single_structure([
+            'kind' => new external_value(PARAM_RAW, 'Recommendation kind'),
+            'target_type' => new external_value(PARAM_RAW, 'Target type'),
+            'target_ref' => new external_value(PARAM_RAW, 'Target reference'),
+            'title' => new external_value(PARAM_RAW, 'Recommendation title'),
+            'reason' => new external_value(PARAM_RAW, 'Reason text'),
+            'priority' => new external_value(PARAM_FLOAT, 'Priority score'),
+            'due_at' => new external_value(PARAM_INT, 'Due timestamp, 0 if none'),
+            'payload_json' => new external_value(PARAM_RAW, 'Structured recommendation payload'),
         ]);
     }
 
@@ -1275,6 +1306,663 @@ class local_mathstate_external extends external_api {
             'ok' => new external_value(PARAM_BOOL, 'Success'),
             'count' => new external_value(PARAM_INT, 'Doc job count'),
             'items' => new external_multiple_structure(self::batch_result_item_structure()),
+        ]);
+    }
+
+    public static function lesson_start_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'userid' => new external_value(PARAM_INT, 'User id, 0 means current token user', VALUE_DEFAULT, 0),
+            'session_key' => new external_value(PARAM_RAW, 'Session key, empty means auto-generate', VALUE_DEFAULT, ''),
+            'lesson_key' => new external_value(PARAM_RAW, 'Lesson key', VALUE_DEFAULT, ''),
+            'cmid' => new external_value(PARAM_INT, 'Course module id', VALUE_DEFAULT, 0),
+            'source' => new external_value(PARAM_RAW, 'Source', VALUE_DEFAULT, 'agent'),
+            'progress_json' => new external_value(PARAM_RAW, 'Progress JSON', VALUE_DEFAULT, ''),
+            'summary_json' => new external_value(PARAM_RAW, 'Summary JSON', VALUE_DEFAULT, ''),
+        ]);
+    }
+
+    public static function lesson_start(
+        int $courseid,
+        int $userid = 0,
+        string $sessionkey = '',
+        string $lessonkey = '',
+        int $cmid = 0,
+        string $source = 'agent',
+        string $progressjson = '',
+        string $summaryjson = ''
+    ): array {
+        $params = self::validate_parameters(self::lesson_start_parameters(), [
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'session_key' => $sessionkey,
+            'lesson_key' => $lessonkey,
+            'cmid' => $cmid,
+            'source' => $source,
+            'progress_json' => $progressjson,
+            'summary_json' => $summaryjson,
+        ]);
+
+        $userid = self::resolve_userid((int)$params['userid']);
+        $courseid = (int)$params['courseid'];
+        self::require_course_user_write($courseid, $userid);
+
+        $timestamp = time();
+        $sessionkey = trim((string)$params['session_key']);
+        if ($sessionkey === '') {
+            $sessionkey = self::build_session_key($userid, $courseid);
+        }
+
+        $items = [[
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'session_key' => $sessionkey,
+            'lesson_key' => (string)$params['lesson_key'],
+            'cmid' => (int)$params['cmid'],
+            'status' => 'active',
+            'progress' => self::decode_json_object((string)$params['progress_json']),
+            'summary' => self::decode_json_object((string)$params['summary_json']),
+            'started_at' => $timestamp,
+            'ended_at' => 0,
+            'last_event_at' => $timestamp,
+            'source' => (string)$params['source'],
+        ]];
+        $results = \local_mathstate\local\storage\runtime_store::upsert_lesson_sessions($items);
+        $result = $results[0] ?? ['record_id' => 0, 'action' => 'created'];
+
+        return [
+            'ok' => true,
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'session_key' => $sessionkey,
+            'status' => 'active',
+            'started_at' => $timestamp,
+            'record_id' => (int)$result['record_id'],
+            'action' => (string)$result['action'],
+        ];
+    }
+
+    public static function lesson_start_returns(): external_single_structure {
+        return new external_single_structure([
+            'ok' => new external_value(PARAM_BOOL, 'Success'),
+            'userid' => new external_value(PARAM_INT, 'User id'),
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'session_key' => new external_value(PARAM_RAW, 'Session key'),
+            'status' => new external_value(PARAM_RAW, 'Session status'),
+            'started_at' => new external_value(PARAM_INT, 'Start timestamp'),
+            'record_id' => new external_value(PARAM_INT, 'Lesson session row id'),
+            'action' => new external_value(PARAM_RAW, 'created or updated'),
+        ]);
+    }
+
+    public static function lesson_finish_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'userid' => new external_value(PARAM_INT, 'User id, 0 means current token user', VALUE_DEFAULT, 0),
+            'session_key' => new external_value(PARAM_RAW, 'Session key'),
+            'status' => new external_value(PARAM_RAW, 'Final status', VALUE_DEFAULT, 'completed'),
+            'ended_at' => new external_value(PARAM_INT, 'End timestamp, 0 means now', VALUE_DEFAULT, 0),
+            'source' => new external_value(PARAM_RAW, 'Source', VALUE_DEFAULT, 'agent'),
+            'progress_json' => new external_value(PARAM_RAW, 'Progress JSON', VALUE_DEFAULT, ''),
+            'summary_json' => new external_value(PARAM_RAW, 'Summary JSON', VALUE_DEFAULT, ''),
+        ]);
+    }
+
+    public static function lesson_finish(
+        int $courseid,
+        int $userid = 0,
+        string $sessionkey = '',
+        string $status = 'completed',
+        int $endedat = 0,
+        string $source = 'agent',
+        string $progressjson = '',
+        string $summaryjson = ''
+    ): array {
+        global $DB;
+        $params = self::validate_parameters(self::lesson_finish_parameters(), [
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'session_key' => $sessionkey,
+            'status' => $status,
+            'ended_at' => $endedat,
+            'source' => $source,
+            'progress_json' => $progressjson,
+            'summary_json' => $summaryjson,
+        ]);
+
+        $userid = self::resolve_userid((int)$params['userid']);
+        $courseid = (int)$params['courseid'];
+        self::require_course_user_write($courseid, $userid);
+
+        $sessionkey = trim((string)$params['session_key']);
+        if ($sessionkey === '') {
+            throw new invalid_parameter_exception('session_key is required');
+        }
+        $timestamp = !empty($params['ended_at']) ? (int)$params['ended_at'] : time();
+        $existing = $DB->get_record('local_mathstate_lesson_session', ['session_key' => $sessionkey], '*', IGNORE_MISSING);
+        if ($existing && ((int)$existing->userid !== $userid || (int)$existing->courseid !== $courseid)) {
+            throw new moodle_exception('Session key does not match current user/course.');
+        }
+
+        $items = [[
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'session_key' => $sessionkey,
+            'lesson_key' => $existing ? (string)($existing->lesson_key ?? '') : '',
+            'cmid' => $existing ? (int)($existing->cmid ?? 0) : 0,
+            'status' => trim((string)$params['status']) !== '' ? trim((string)$params['status']) : 'completed',
+            'progress' => trim((string)$params['progress_json']) !== ''
+                ? self::decode_json_object((string)$params['progress_json'])
+                : self::decode_json_object((string)($existing->progress_json ?? '')),
+            'summary' => trim((string)$params['summary_json']) !== ''
+                ? self::decode_json_object((string)$params['summary_json'])
+                : self::decode_json_object((string)($existing->summary_json ?? '')),
+            'started_at' => $existing && !empty($existing->started_at) ? (int)$existing->started_at : $timestamp,
+            'ended_at' => $timestamp,
+            'last_event_at' => $timestamp,
+            'source' => trim((string)$params['source']) !== ''
+                ? trim((string)$params['source'])
+                : (string)($existing->source ?? 'agent'),
+        ]];
+        $results = \local_mathstate\local\storage\runtime_store::upsert_lesson_sessions($items);
+        $result = $results[0] ?? ['record_id' => 0, 'action' => 'updated'];
+
+        return [
+            'ok' => true,
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'session_key' => $sessionkey,
+            'status' => (string)$items[0]['status'],
+            'ended_at' => $timestamp,
+            'record_id' => (int)$result['record_id'],
+            'action' => (string)$result['action'],
+        ];
+    }
+
+    public static function lesson_finish_returns(): external_single_structure {
+        return new external_single_structure([
+            'ok' => new external_value(PARAM_BOOL, 'Success'),
+            'userid' => new external_value(PARAM_INT, 'User id'),
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'session_key' => new external_value(PARAM_RAW, 'Session key'),
+            'status' => new external_value(PARAM_RAW, 'Session status'),
+            'ended_at' => new external_value(PARAM_INT, 'End timestamp'),
+            'record_id' => new external_value(PARAM_INT, 'Lesson session row id'),
+            'action' => new external_value(PARAM_RAW, 'created or updated'),
+        ]);
+    }
+
+    public static function lesson_log_append_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'userid' => new external_value(PARAM_INT, 'User id, 0 means current token user', VALUE_DEFAULT, 0),
+            'session_key' => new external_value(PARAM_RAW, 'Session key', VALUE_DEFAULT, ''),
+            'lesson_key' => new external_value(PARAM_RAW, 'Lesson key', VALUE_DEFAULT, ''),
+            'questionid' => new external_value(PARAM_INT, 'Question id', VALUE_DEFAULT, 0),
+            'questionusageid' => new external_value(PARAM_INT, 'Question usage id', VALUE_DEFAULT, 0),
+            'cmid' => new external_value(PARAM_INT, 'Course module id', VALUE_DEFAULT, 0),
+            'qg_id' => new external_value(PARAM_RAW, 'QG id', VALUE_DEFAULT, ''),
+            'kg_ids' => new external_multiple_structure(
+                new external_value(PARAM_RAW, 'Knowledge point id'),
+                'Knowledge point ids',
+                VALUE_DEFAULT,
+                []
+            ),
+            'event_type' => new external_value(PARAM_RAW, 'Event type', VALUE_DEFAULT, 'practice'),
+            'result' => new external_value(PARAM_RAW, 'Result', VALUE_DEFAULT, ''),
+            'score' => new external_value(PARAM_FLOAT, 'Score', VALUE_DEFAULT, 0.0),
+            'maxscore' => new external_value(PARAM_FLOAT, 'Max score', VALUE_DEFAULT, 0.0),
+            'source' => new external_value(PARAM_RAW, 'Source', VALUE_DEFAULT, 'agent'),
+            'payload_json' => new external_value(PARAM_RAW, 'Payload JSON', VALUE_DEFAULT, ''),
+            'occurred_at' => new external_value(PARAM_INT, 'Occurred at timestamp, 0 means now', VALUE_DEFAULT, 0),
+        ]);
+    }
+
+    public static function lesson_log_append(
+        int $courseid,
+        int $userid = 0,
+        string $sessionkey = '',
+        string $lessonkey = '',
+        int $questionid = 0,
+        int $questionusageid = 0,
+        int $cmid = 0,
+        string $qgid = '',
+        array $kgids = [],
+        string $eventtype = 'practice',
+        string $result = '',
+        float $score = 0.0,
+        float $maxscore = 0.0,
+        string $source = 'agent',
+        string $payloadjson = '',
+        int $occurredat = 0
+    ): array {
+        $params = self::validate_parameters(self::lesson_log_append_parameters(), [
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'session_key' => $sessionkey,
+            'lesson_key' => $lessonkey,
+            'questionid' => $questionid,
+            'questionusageid' => $questionusageid,
+            'cmid' => $cmid,
+            'qg_id' => $qgid,
+            'kg_ids' => $kgids,
+            'event_type' => $eventtype,
+            'result' => $result,
+            'score' => $score,
+            'maxscore' => $maxscore,
+            'source' => $source,
+            'payload_json' => $payloadjson,
+            'occurred_at' => $occurredat,
+        ]);
+
+        $userid = self::resolve_userid((int)$params['userid']);
+        $courseid = (int)$params['courseid'];
+        self::require_course_user_write($courseid, $userid);
+
+        $items = [[
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'session_key' => (string)$params['session_key'],
+            'lesson_key' => (string)$params['lesson_key'],
+            'questionid' => (int)$params['questionid'],
+            'questionusageid' => (int)$params['questionusageid'],
+            'cmid' => (int)$params['cmid'],
+            'qg_id' => (string)$params['qg_id'],
+            'kg_ids' => $params['kg_ids'],
+            'event_type' => (string)$params['event_type'],
+            'result' => (string)$params['result'],
+            'score' => (float)$params['score'],
+            'maxscore' => (float)$params['maxscore'],
+            'source' => (string)$params['source'],
+            'payload' => self::decode_json_object((string)$params['payload_json']),
+            'occurred_at' => (int)$params['occurred_at'],
+        ]];
+        $results = \local_mathstate\local\storage\runtime_store::record_learning_events($items);
+        $event = $results[0] ?? ['event_id' => 0, 'kg_count' => 0, 'qg_id' => ''];
+
+        return [
+            'ok' => true,
+            'event_id' => (int)$event['event_id'],
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'session_key' => (string)($event['session_key'] ?? ''),
+            'qg_id' => (string)($event['qg_id'] ?? ''),
+            'kg_count' => (int)($event['kg_count'] ?? 0),
+        ];
+    }
+
+    public static function lesson_log_append_returns(): external_single_structure {
+        return new external_single_structure([
+            'ok' => new external_value(PARAM_BOOL, 'Success'),
+            'event_id' => new external_value(PARAM_INT, 'Learning event id'),
+            'userid' => new external_value(PARAM_INT, 'User id'),
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'session_key' => new external_value(PARAM_RAW, 'Session key', VALUE_OPTIONAL),
+            'qg_id' => new external_value(PARAM_RAW, 'Resolved qg id', VALUE_OPTIONAL),
+            'kg_count' => new external_value(PARAM_INT, 'Resolved knowledge point count'),
+        ]);
+    }
+
+    public static function review_complete_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'userid' => new external_value(PARAM_INT, 'User id, 0 means current token user', VALUE_DEFAULT, 0),
+            'review_id' => new external_value(PARAM_INT, 'Review task id', VALUE_DEFAULT, 0),
+            'target_type' => new external_value(PARAM_RAW, 'Target type fallback', VALUE_DEFAULT, ''),
+            'target_ref' => new external_value(PARAM_RAW, 'Target ref fallback', VALUE_DEFAULT, ''),
+            'status' => new external_value(PARAM_RAW, 'Completion status', VALUE_DEFAULT, 'done'),
+            'completed_at' => new external_value(PARAM_INT, 'Completed timestamp, 0 means now', VALUE_DEFAULT, 0),
+            'linked_doc_url' => new external_value(PARAM_RAW, 'Linked doc URL', VALUE_DEFAULT, ''),
+            'note' => new external_value(PARAM_RAW, 'Completion note', VALUE_DEFAULT, ''),
+        ]);
+    }
+
+    public static function review_complete(
+        int $courseid,
+        int $userid = 0,
+        int $reviewid = 0,
+        string $targettype = '',
+        string $targetref = '',
+        string $status = 'done',
+        int $completedat = 0,
+        string $linkeddocurl = '',
+        string $note = ''
+    ): array {
+        global $DB;
+        $params = self::validate_parameters(self::review_complete_parameters(), [
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'review_id' => $reviewid,
+            'target_type' => $targettype,
+            'target_ref' => $targetref,
+            'status' => $status,
+            'completed_at' => $completedat,
+            'linked_doc_url' => $linkeddocurl,
+            'note' => $note,
+        ]);
+
+        $userid = self::resolve_userid((int)$params['userid']);
+        $courseid = (int)$params['courseid'];
+        self::require_course_user_write($courseid, $userid);
+
+        $record = null;
+        if (!empty($params['review_id'])) {
+            $record = $DB->get_record('local_mathstate_review_task', [
+                'id' => (int)$params['review_id'],
+                'userid' => $userid,
+                'courseid' => $courseid,
+            ], '*', IGNORE_MISSING);
+        } else {
+            $targettype = trim((string)$params['target_type']);
+            $targetref = trim((string)$params['target_ref']);
+            if ($targettype === '' || $targetref === '') {
+                throw new invalid_parameter_exception('review_id or target_type+target_ref is required');
+            }
+            $record = $DB->get_record('local_mathstate_review_task', [
+                'userid' => $userid,
+                'courseid' => $courseid,
+                'target_type' => $targettype,
+                'target_ref' => $targetref,
+            ], '*', IGNORE_MISSING);
+        }
+
+        if (!$record) {
+            throw new moodle_exception('Review task not found.');
+        }
+
+        $payload = self::decode_json_object((string)($record->recommended_payload_json ?? ''));
+        if (trim((string)$params['note']) !== '') {
+            $payload['completion_note'] = trim((string)$params['note']);
+        }
+        $completedat = !empty($params['completed_at']) ? (int)$params['completed_at'] : time();
+        $results = \local_mathstate\local\storage\runtime_store::upsert_reviews([[
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'target_type' => (string)$record->target_type,
+            'target_ref' => (string)$record->target_ref,
+            'title' => (string)$record->title,
+            'task_kind' => (string)$record->task_kind,
+            'priority' => (float)$record->priority,
+            'source_reason' => (string)$record->source_reason,
+            'payload' => $payload,
+            'status' => trim((string)$params['status']) !== '' ? trim((string)$params['status']) : 'done',
+            'due_at' => (int)($record->due_at ?? 0),
+            'completed_at' => $completedat,
+            'linked_doc_url' => trim((string)$params['linked_doc_url']) !== ''
+                ? trim((string)$params['linked_doc_url'])
+                : (string)($record->linked_doc_url ?? ''),
+        ]]);
+        $result = $results[0] ?? ['record_id' => (int)$record->id, 'action' => 'updated'];
+
+        return [
+            'ok' => true,
+            'review_id' => (int)$record->id,
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'target_type' => (string)$record->target_type,
+            'target_ref' => (string)$record->target_ref,
+            'status' => trim((string)$params['status']) !== '' ? trim((string)$params['status']) : 'done',
+            'completed_at' => $completedat,
+            'record_id' => (int)$result['record_id'],
+            'action' => (string)$result['action'],
+        ];
+    }
+
+    public static function review_complete_returns(): external_single_structure {
+        return new external_single_structure([
+            'ok' => new external_value(PARAM_BOOL, 'Success'),
+            'review_id' => new external_value(PARAM_INT, 'Review task id'),
+            'userid' => new external_value(PARAM_INT, 'User id'),
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'target_type' => new external_value(PARAM_RAW, 'Target type'),
+            'target_ref' => new external_value(PARAM_RAW, 'Target reference'),
+            'status' => new external_value(PARAM_RAW, 'Completion status'),
+            'completed_at' => new external_value(PARAM_INT, 'Completion timestamp'),
+            'record_id' => new external_value(PARAM_INT, 'Review row id'),
+            'action' => new external_value(PARAM_RAW, 'created or updated'),
+        ]);
+    }
+
+    public static function doc_publish_request_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'userid' => new external_value(PARAM_INT, 'User id, 0 means current token user', VALUE_DEFAULT, 0),
+            'job_key' => new external_value(PARAM_RAW, 'Job key, empty means auto-generate', VALUE_DEFAULT, ''),
+            'target_type' => new external_value(PARAM_RAW, 'Target type', VALUE_DEFAULT, ''),
+            'target_ref' => new external_value(PARAM_RAW, 'Target ref', VALUE_DEFAULT, ''),
+            'doc_ref' => new external_value(PARAM_RAW, 'Doc ref', VALUE_DEFAULT, ''),
+            'provider' => new external_value(PARAM_RAW, 'Provider', VALUE_DEFAULT, 'agent'),
+            'job_type' => new external_value(PARAM_RAW, 'Job type', VALUE_DEFAULT, 'doc'),
+            'request_payload_json' => new external_value(PARAM_RAW, 'Request payload JSON', VALUE_DEFAULT, ''),
+            'queued_at' => new external_value(PARAM_INT, 'Queued timestamp, 0 means now', VALUE_DEFAULT, 0),
+        ]);
+    }
+
+    public static function doc_publish_request(
+        int $courseid,
+        int $userid = 0,
+        string $jobkey = '',
+        string $targettype = '',
+        string $targetref = '',
+        string $docref = '',
+        string $provider = 'agent',
+        string $jobtype = 'doc',
+        string $requestpayloadjson = '',
+        int $queuedat = 0
+    ): array {
+        $params = self::validate_parameters(self::doc_publish_request_parameters(), [
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'job_key' => $jobkey,
+            'target_type' => $targettype,
+            'target_ref' => $targetref,
+            'doc_ref' => $docref,
+            'provider' => $provider,
+            'job_type' => $jobtype,
+            'request_payload_json' => $requestpayloadjson,
+            'queued_at' => $queuedat,
+        ]);
+
+        $userid = self::resolve_userid((int)$params['userid']);
+        $courseid = (int)$params['courseid'];
+        self::require_course_user_write($courseid, $userid);
+
+        $jobkey = trim((string)$params['job_key']);
+        if ($jobkey === '') {
+            $jobkey = self::build_job_key($userid, $courseid);
+        }
+        $queuedat = !empty($params['queued_at']) ? (int)$params['queued_at'] : time();
+
+        $results = \local_mathstate\local\storage\runtime_store::upsert_doc_jobs([[
+            'job_key' => $jobkey,
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'target_type' => (string)$params['target_type'],
+            'target_ref' => (string)$params['target_ref'],
+            'doc_ref' => (string)$params['doc_ref'],
+            'provider' => (string)$params['provider'],
+            'job_type' => (string)$params['job_type'],
+            'status' => 'queued',
+            'request_payload' => self::decode_json_object((string)$params['request_payload_json']),
+            'result_payload' => [],
+            'error_message' => '',
+            'queued_at' => $queuedat,
+            'completed_at' => 0,
+        ]]);
+        $result = $results[0] ?? ['record_id' => 0, 'action' => 'created'];
+
+        return [
+            'ok' => true,
+            'job_key' => $jobkey,
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'status' => 'queued',
+            'queued_at' => $queuedat,
+            'record_id' => (int)$result['record_id'],
+            'action' => (string)$result['action'],
+        ];
+    }
+
+    public static function doc_publish_request_returns(): external_single_structure {
+        return new external_single_structure([
+            'ok' => new external_value(PARAM_BOOL, 'Success'),
+            'job_key' => new external_value(PARAM_RAW, 'Job key'),
+            'userid' => new external_value(PARAM_INT, 'User id'),
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'status' => new external_value(PARAM_RAW, 'Job status'),
+            'queued_at' => new external_value(PARAM_INT, 'Queued timestamp'),
+            'record_id' => new external_value(PARAM_INT, 'Doc job row id'),
+            'action' => new external_value(PARAM_RAW, 'created or updated'),
+        ]);
+    }
+
+    public static function next_recommendation_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'userid' => new external_value(PARAM_INT, 'User id, 0 means current token user', VALUE_DEFAULT, 0),
+            'limit' => new external_value(PARAM_INT, 'Max recommendation count', VALUE_DEFAULT, 5),
+            'due_before' => new external_value(PARAM_INT, 'Due upper bound timestamp, 0 means now', VALUE_DEFAULT, 0),
+        ]);
+    }
+
+    public static function next_recommendation(int $courseid, int $userid = 0, int $limit = 5, int $duebefore = 0): array {
+        global $DB;
+        $params = self::validate_parameters(self::next_recommendation_parameters(), [
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'limit' => $limit,
+            'due_before' => $duebefore,
+        ]);
+
+        $userid = self::resolve_userid((int)$params['userid']);
+        $courseid = (int)$params['courseid'];
+        self::require_course_user_view($courseid, $userid);
+
+        $limit = max(1, min(50, (int)$params['limit']));
+        $duebefore = !empty($params['due_before']) ? (int)$params['due_before'] : time();
+        $recommendations = [];
+
+        $duetasks = $DB->get_records_select(
+            'local_mathstate_review_task',
+            'userid = :userid AND courseid = :courseid AND status IN (:todo, :doing) AND due_at > 0 AND due_at <= :duebefore',
+            [
+                'userid' => $userid,
+                'courseid' => $courseid,
+                'todo' => 'todo',
+                'doing' => 'doing',
+                'duebefore' => $duebefore,
+            ],
+            'priority DESC, due_at ASC',
+            '*',
+            0,
+            $limit
+        );
+        foreach ($duetasks as $task) {
+            $recommendations[] = [
+                'kind' => 'due_review',
+                'target_type' => (string)$task->target_type,
+                'target_ref' => (string)$task->target_ref,
+                'title' => (string)$task->title,
+                'reason' => 'review task due',
+                'priority' => (float)$task->priority,
+                'due_at' => (int)($task->due_at ?? 0),
+                'payload_json' => (string)($task->recommended_payload_json ?? '{}'),
+            ];
+            if (count($recommendations) >= $limit) {
+                break;
+            }
+        }
+
+        if (count($recommendations) < $limit) {
+            $remaining = $limit - count($recommendations);
+            $weakkp = $DB->get_records_select(
+                'local_mathstate_student_kp',
+                'userid = :userid AND courseid = :courseid AND stage IN (:weak, :learning)',
+                [
+                    'userid' => $userid,
+                    'courseid' => $courseid,
+                    'weak' => 'weak',
+                    'learning' => 'learning',
+                ],
+                'mastery_score ASC, timemodified DESC',
+                '*',
+                0,
+                $remaining
+            );
+            foreach ($weakkp as $state) {
+                $recommendations[] = [
+                    'kind' => 'focus_kp',
+                    'target_type' => 'kp',
+                    'target_ref' => (string)$state->kg_id,
+                    'title' => '巩固知识点：' . self::standard_name('kp', (string)$state->kg_id),
+                    'reason' => 'low mastery',
+                    'priority' => max(0.0, 100.0 - (float)$state->mastery_score),
+                    'due_at' => (int)($state->next_review_at ?? 0),
+                    'payload_json' => self::encode_json([
+                        'stage' => (string)$state->stage,
+                        'mastery_score' => (float)$state->mastery_score,
+                    ]),
+                ];
+                if (count($recommendations) >= $limit) {
+                    break;
+                }
+            }
+        }
+
+        if (count($recommendations) < $limit) {
+            $remaining = $limit - count($recommendations);
+            $weakqtypes = $DB->get_records_select(
+                'local_mathstate_student_qtype',
+                'userid = :userid AND courseid = :courseid AND stage IN (:weak, :learning)',
+                [
+                    'userid' => $userid,
+                    'courseid' => $courseid,
+                    'weak' => 'weak',
+                    'learning' => 'learning',
+                ],
+                'mastery_score ASC, timemodified DESC',
+                '*',
+                0,
+                $remaining
+            );
+            foreach ($weakqtypes as $state) {
+                $recommendations[] = [
+                    'kind' => 'focus_qtype',
+                    'target_type' => 'qtype',
+                    'target_ref' => (string)$state->qg_id,
+                    'title' => '巩固题型：' . self::standard_name('qtype', (string)$state->qg_id),
+                    'reason' => 'low mastery',
+                    'priority' => max(0.0, 100.0 - (float)$state->mastery_score),
+                    'due_at' => (int)($state->next_review_at ?? 0),
+                    'payload_json' => self::encode_json([
+                        'stage' => (string)$state->stage,
+                        'mastery_score' => (float)$state->mastery_score,
+                    ]),
+                ];
+                if (count($recommendations) >= $limit) {
+                    break;
+                }
+            }
+        }
+
+        return [
+            'ok' => true,
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'generated_at' => time(),
+            'count' => count($recommendations),
+            'items' => $recommendations,
+        ];
+    }
+
+    public static function next_recommendation_returns(): external_single_structure {
+        return new external_single_structure([
+            'ok' => new external_value(PARAM_BOOL, 'Success'),
+            'userid' => new external_value(PARAM_INT, 'User id'),
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'generated_at' => new external_value(PARAM_INT, 'Recommendation generated timestamp'),
+            'count' => new external_value(PARAM_INT, 'Recommendation count'),
+            'items' => new external_multiple_structure(self::recommendation_item_structure()),
         ]);
     }
 
