@@ -11,8 +11,12 @@ php admin/cli/upgrade.php --non-interactive
 php admin/cli/purge_caches.php
 ```
 
-For this release (`local_mathstate` `2026041701`), no schema extension is required.
+For this release (`local_mathstate` `2026041800`), no schema extension is required.
 Only a code/version upgrade savepoint is applied.
+
+Contract reference:
+
+- `/Users/wonder/Documents/moodle/docs/LOCAL_MATHSTATE_CONTRACT.md`
 
 ## 2) Register webservice functions into `local_aiagentapi`
 
@@ -83,4 +87,3 @@ php scripts/cleanup_mathstate_smoke.php \
 - Active runtime root: `/srv/moodle/current`
 - Do **not** run deploy/upgrade under `/var/www/html/moodle` (legacy tree)
 - Deploy first, then `upgrade.php`, then function registration, then smoke test
-

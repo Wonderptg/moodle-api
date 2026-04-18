@@ -31,6 +31,7 @@ We have also validated this on a real upgraded course copy:
 - real quiz lifecycle verified on `quiz 431 / 政治思想和职业道德`
 - mathstate runtime storage, CLI commands, and WS smoke tooling are now landed locally in this repo
 - student-facing mathstate APIs are now available: `lesson_start`, `lesson_finish`, `lesson_log_append`, `review_complete`, `doc_publish_request`, `next_recommendation`
+- mathstate runtime compatibility contract is documented: `/Users/wonder/Documents/moodle/docs/LOCAL_MATHSTATE_CONTRACT.md`
 
 ## Repository role
 
@@ -274,6 +275,7 @@ python3 scripts/moodle_cli.py --env-file .env.upgrade51.local --json --force qui
 These are the documents worth reading first.
 
 - `/Users/wonder/Documents/moodle/docs/MOODLE_CLI.md`
+- `/Users/wonder/Documents/moodle/docs/LOCAL_MATHSTATE_CONTRACT.md`
 - `/Users/wonder/Documents/moodle/docs/LOCAL_MATHSTATE_OPS.md`
 - `/Users/wonder/Documents/moodle/docs/AIAGENTAPI_LOCAL_CONFIG.md`
 - `/Users/wonder/Documents/moodle/docs/UPGRADE_REHEARSAL_INVENTORY.md`

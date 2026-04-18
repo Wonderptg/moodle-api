@@ -234,6 +234,10 @@ bin/moodle --format csv notifications list --limit 20
 
 `mathstate` is the CLI surface for `/Users/wonder/Documents/moodle/public/local/mathstate`.
 
+Compatibility and payload contract reference:
+
+- `/Users/wonder/Documents/moodle/docs/LOCAL_MATHSTATE_CONTRACT.md`
+
 Supported commands:
 
 - `mathstate kp-upsert`
