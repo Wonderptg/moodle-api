@@ -626,6 +626,68 @@ def build_payload(wsfunction: str, token: str, params: Dict[str, Any]) -> Dict[s
     return payload
 
 
+_SPARSE_EMPTY = object()
+
+
+def sparse_value(
+    value: Any,
+    *,
+    keep_zero: bool = False,
+    keep_empty_list: bool = False,
+    keep_empty_dict: bool = False,
+) -> Any:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return _SPARSE_EMPTY
+    if isinstance(value, dict):
+        trimmed: Dict[str, Any] = {}
+        for key, item in value.items():
+            next_value = sparse_value(item)
+            if next_value is _SPARSE_EMPTY:
+                continue
+            trimmed[key] = next_value
+        if trimmed or keep_empty_dict:
+            return trimmed
+        return _SPARSE_EMPTY
+    if isinstance(value, list):
+        trimmed_list: List[Any] = []
+        for item in value:
+            next_value = sparse_value(item)
+            if next_value is _SPARSE_EMPTY:
+                continue
+            trimmed_list.append(next_value)
+        if trimmed_list or keep_empty_list:
+            return trimmed_list
+        return _SPARSE_EMPTY
+    if isinstance(value, str):
+        return value if value != "" else _SPARSE_EMPTY
+    if isinstance(value, (int, float)) and value == 0 and not keep_zero:
+        return _SPARSE_EMPTY
+    return value
+
+
+def sparse_params(
+    params: Dict[str, Any],
+    *,
+    keep_zero_keys: Sequence[str] = (),
+    keep_empty_list_keys: Sequence[str] = (),
+    keep_empty_dict_keys: Sequence[str] = (),
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, value in params.items():
+        trimmed = sparse_value(
+            value,
+            keep_zero=key in keep_zero_keys,
+            keep_empty_list=key in keep_empty_list_keys,
+            keep_empty_dict=key in keep_empty_dict_keys,
+        )
+        if trimmed is _SPARSE_EMPTY:
+            continue
+        result[key] = trimmed
+    return result
+
+
 def invoke_ws(base_url: str, token: str, wsfunction: str, params: Dict[str, Any], timeout: float) -> Any:
     endpoint = f"{base_url}/webservice/rest/server.php"
     data = urllib.parse.urlencode(build_payload(wsfunction, token, params)).encode("utf-8")
@@ -2047,6 +2109,15 @@ def resolve_batch_items(args: argparse.Namespace, *, label: str) -> List[Dict[st
     return items
 
 
+def resolve_single_item_object(args: argparse.Namespace, *, label: str) -> Dict[str, Any]:
+    if getattr(args, "input", "") or getattr(args, "item_json", []):
+        items = resolve_batch_items(args, label=label)
+        if len(items) != 1:
+            raise CliError(f"{label} expects exactly one object input", EXIT_USAGE)
+        return items[0]
+    return {}
+
+
 def _pair_from_object(item: Any, flag_name: str) -> Dict[str, Any]:
     if not isinstance(item, dict):
         raise CliError(f"{flag_name} must decode to an object", EXIT_USAGE)
@@ -2555,6 +2626,7 @@ def command_mathstate_question_map_upsert(cli: "MoodleCLI", args: argparse.Names
 def command_mathstate_question_map_sync(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     return cli.call("local_mathstate_question_map_sync_batch", {
         "items": resolve_batch_items(args, label="mathstate question-map-sync"),
+        "dry_run": args.dry_run,
     })
 
 
@@ -2600,7 +2672,7 @@ def command_mathstate_doc_job_upsert(cli: "MoodleCLI", args: argparse.Namespace)
 
 
 def command_mathstate_lesson_start(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
-    return cli.call("local_mathstate_lesson_start", {
+    params = sparse_params({
         "courseid": args.course_id,
         "userid": args.user_id,
         "session_key": args.session_key,
@@ -2610,23 +2682,31 @@ def command_mathstate_lesson_start(cli: "MoodleCLI", args: argparse.Namespace) -
         "progress_json": args.progress_json,
         "summary_json": args.summary_json,
     })
+    return cli.call("local_mathstate_lesson_start", params)
 
 
 def command_mathstate_lesson_finish(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
-    return cli.call("local_mathstate_lesson_finish", {
+    params = sparse_params({
         "courseid": args.course_id,
         "userid": args.user_id,
         "session_key": args.session_key,
+        "session_id": args.session_id,
         "status": args.status,
         "ended_at": args.ended_at,
+        "finished_at": args.finished_at,
         "source": args.source,
         "progress_json": args.progress_json,
         "summary_json": args.summary_json,
+        "summary_text": args.summary_text,
+        "outcome": args.outcome,
+        "duration_sec": args.duration_sec,
+        "payload_json": args.payload_json,
     })
+    return cli.call("local_mathstate_lesson_finish", params)
 
 
 def command_mathstate_lesson_log_append(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
-    return cli.call("local_mathstate_lesson_log_append", {
+    params = sparse_params({
         "courseid": args.course_id,
         "userid": args.user_id,
         "session_key": args.session_key,
@@ -2643,25 +2723,36 @@ def command_mathstate_lesson_log_append(cli: "MoodleCLI", args: argparse.Namespa
         "source": args.source,
         "payload_json": args.payload_json,
         "occurred_at": args.occurred_at,
-    })
+    }, keep_zero_keys=("userid", "score", "maxscore"))
+    if args.session_key:
+        params["userid"] = args.user_id
+        params["courseid"] = args.course_id
+    return cli.call("local_mathstate_lesson_log_append", params)
 
 
 def command_mathstate_review_complete(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
-    return cli.call("local_mathstate_review_complete", {
-        "courseid": args.course_id,
-        "userid": args.user_id,
+    item = resolve_single_item_object(args, label="mathstate review-complete")
+    params = sparse_params({
+        "courseid": args.course_id if args.course_id else item.get("courseid", item.get("course_id", 0)),
+        "userid": args.user_id if args.user_id else item.get("userid", item.get("user_id", 0)),
         "review_id": args.review_id,
-        "target_type": args.target_type,
-        "target_ref": args.target_ref,
-        "status": args.status,
-        "completed_at": args.completed_at,
-        "linked_doc_url": args.linked_doc_url,
-        "note": args.note,
-    })
+        "review_task_id": item.get("review_task_id", item.get("review_id", 0)),
+        "target_type": args.target_type or str(item.get("target_type", "")),
+        "target_ref": args.target_ref or str(item.get("target_ref", "")),
+        "session_id": args.session_id or str(item.get("session_id", item.get("session_key", ""))),
+        "lesson_key": args.lesson_key or str(item.get("lesson_key", "")),
+        "status": str(item.get("status", "")) if args.status == "done" else args.status,
+        "completed_at": args.completed_at if args.completed_at else item.get("completed_at", 0),
+        "linked_doc_url": args.linked_doc_url or str(item.get("linked_doc_url", "")),
+        "note": args.note or str(item.get("note", "")),
+        "completion_note": str(item.get("completion_note", "")),
+    }, keep_zero_keys=("userid",))
+    return cli.call("local_mathstate_review_complete", params)
 
 
 def command_mathstate_doc_publish_request(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
-    return cli.call("local_mathstate_doc_publish_request", {
+    job_type = args.doc_type or args.job_type
+    params = sparse_params({
         "courseid": args.course_id,
         "userid": args.user_id,
         "job_key": args.job_key,
@@ -2669,10 +2760,12 @@ def command_mathstate_doc_publish_request(cli: "MoodleCLI", args: argparse.Names
         "target_ref": args.target_ref,
         "doc_ref": args.doc_ref,
         "provider": args.provider,
-        "job_type": args.job_type,
+        "job_type": job_type,
+        "doc_type": args.doc_type,
         "request_payload_json": args.request_json,
         "queued_at": args.queued_at,
-    })
+    }, keep_zero_keys=("userid",))
+    return cli.call("local_mathstate_doc_publish_request", params)
 
 
 def command_mathstate_next_recommendation(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
@@ -3621,12 +3714,18 @@ def build_parser() -> argparse.ArgumentParser:
     mathstate_lesson_finish = add_parser(mathstate_sub, "lesson-finish", description="Finish one lesson session")
     mathstate_lesson_finish.add_argument("--course-id", type=int, required=True, help="Course id")
     mathstate_lesson_finish.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
-    mathstate_lesson_finish.add_argument("--session-key", required=True, help="Session key")
+    mathstate_lesson_finish.add_argument("--session-key", default="", help="Session key")
+    mathstate_lesson_finish.add_argument("--session-id", default="", help="Compatibility alias for session key")
     mathstate_lesson_finish.add_argument("--status", default="completed", help="Final status")
     mathstate_lesson_finish.add_argument("--ended-at", type=int, default=0, help="End timestamp, 0 means now")
+    mathstate_lesson_finish.add_argument("--finished-at", type=int, default=0, help="Compatibility alias for end timestamp")
     mathstate_lesson_finish.add_argument("--source", default="agent", help="Source label")
     mathstate_lesson_finish.add_argument("--progress-json", default="", help="Progress JSON object string")
     mathstate_lesson_finish.add_argument("--summary-json", default="", help="Summary JSON object string")
+    mathstate_lesson_finish.add_argument("--summary-text", default="", help="Compatibility summary text")
+    mathstate_lesson_finish.add_argument("--outcome", default="", help="Compatibility outcome field")
+    mathstate_lesson_finish.add_argument("--duration-sec", type=int, default=0, help="Compatibility duration field")
+    mathstate_lesson_finish.add_argument("--payload-json", default="", help="Compatibility payload JSON object string")
     mathstate_lesson_finish.set_defaults(handler=command_mathstate_lesson_finish, command_path=["mathstate", "lesson-finish"])
 
     mathstate_lesson_log = add_parser(mathstate_sub, "lesson-log-append", description="Append one learning event")
@@ -3649,11 +3748,15 @@ def build_parser() -> argparse.ArgumentParser:
     mathstate_lesson_log.set_defaults(handler=command_mathstate_lesson_log_append, command_path=["mathstate", "lesson-log-append"])
 
     mathstate_review_complete = add_parser(mathstate_sub, "review-complete", description="Mark one review task as complete")
-    mathstate_review_complete.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_review_complete.add_argument("--course-id", type=int, default=0, help="Course id")
     mathstate_review_complete.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
     mathstate_review_complete.add_argument("--review-id", type=int, default=0, help="Review task id")
+    mathstate_review_complete.add_argument("--input", default="", help="JSON file path containing one object")
+    mathstate_review_complete.add_argument("--item-json", action="append", default=[], help="Inline JSON object for one completion item")
     mathstate_review_complete.add_argument("--target-type", default="", help="Fallback target type")
     mathstate_review_complete.add_argument("--target-ref", default="", help="Fallback target reference")
+    mathstate_review_complete.add_argument("--session-id", default="", help="Session id/session key")
+    mathstate_review_complete.add_argument("--lesson-key", default="", help="Lesson key")
     mathstate_review_complete.add_argument("--status", default="done", help="Completion status")
     mathstate_review_complete.add_argument("--completed-at", type=int, default=0, help="Completion timestamp, 0 means now")
     mathstate_review_complete.add_argument("--linked-doc-url", default="", help="Linked document URL")
@@ -3668,7 +3771,8 @@ def build_parser() -> argparse.ArgumentParser:
     mathstate_doc_publish.add_argument("--target-ref", default="", help="Target reference")
     mathstate_doc_publish.add_argument("--doc-ref", default="", help="Document ref/url")
     mathstate_doc_publish.add_argument("--provider", default="agent", help="Provider id")
-    mathstate_doc_publish.add_argument("--job-type", default="doc", help="Job type")
+    mathstate_doc_publish.add_argument("--doc-type", default="doc", help="User-facing document type")
+    mathstate_doc_publish.add_argument("--job-type", default="", help=argparse.SUPPRESS)
     mathstate_doc_publish.add_argument("--request-json", default="", help="Request payload JSON object string")
     mathstate_doc_publish.add_argument("--queued-at", type=int, default=0, help="Queued timestamp, 0 means now")
     mathstate_doc_publish.set_defaults(handler=command_mathstate_doc_publish_request, command_path=["mathstate", "doc-publish-request"])

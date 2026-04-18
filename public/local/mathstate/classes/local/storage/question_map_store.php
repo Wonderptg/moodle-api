@@ -115,7 +115,7 @@ final class question_map_store {
         ]));
     }
 
-    public static function sync_sidecar_batch(array $items): array {
+    public static function sync_sidecar_batch(array $items, bool $dryrun = false): array {
         $timestamp = time();
         $synced = [];
         $unresolved = [];
@@ -176,7 +176,14 @@ final class question_map_store {
                 'review_notes' => (string)($item['review_notes'] ?? ''),
                 'metadata' => $metadata,
             ]);
-            $result = self::upsert_mapping($values, $timestamp);
+            if ($dryrun) {
+                $result = [
+                    'record_id' => 0,
+                    'action' => 'dry_run',
+                ];
+            } else {
+                $result = self::upsert_mapping($values, $timestamp);
+            }
             $synced[] = [
                 'source_id' => $sourceid,
                 'questionid' => (int)$values['questionid'],
@@ -188,6 +195,7 @@ final class question_map_store {
 
         return [
             'ok' => true,
+            'dry_run' => $dryrun,
             'synced' => $synced,
             'unresolved' => $unresolved,
             'ambiguous' => $ambiguous,

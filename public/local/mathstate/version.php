@@ -25,7 +25,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_mathstate';
-$plugin->version = 2026041701;
+$plugin->version = 2026041800;
 $plugin->requires = 2024100700.00; // Moodle 4.5+.
 $plugin->maturity = MATURITY_ALPHA;
-$plugin->release = '0.1.1';
+$plugin->release = '0.1.2';

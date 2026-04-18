@@ -139,5 +139,10 @@ function xmldb_local_mathstate_upgrade(int $oldversion): bool {
         upgrade_plugin_savepoint(true, 2026041701, 'local', 'mathstate');
     }
 
+    if ($oldversion < 2026041800) {
+        // Compatibility layer only. No schema changes in this upgrade.
+        upgrade_plugin_savepoint(true, 2026041800, 'local', 'mathstate');
+    }
+
     return true;
 }

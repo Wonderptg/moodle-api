@@ -473,6 +473,104 @@ class local_mathstate_external extends external_api {
         return is_array($decoded) ? $decoded : [];
     }
 
+    private static function metadata_string(?string $value, string $key): string {
+        $metadata = self::decode_json_object((string)$value);
+        return isset($metadata[$key]) ? trim((string)$metadata[$key]) : '';
+    }
+
+    private static function normalize_lesson_summary(array $params, $existing = null): array {
+        if (!$existing instanceof \stdClass) {
+            $existing = null;
+        }
+        $summary = trim((string)($params['summary_json'] ?? '')) !== ''
+            ? self::decode_json_object((string)$params['summary_json'])
+            : self::decode_json_object((string)($existing->summary_json ?? ''));
+
+        $summarytext = trim((string)($params['summary_text'] ?? ''));
+        if ($summarytext !== '') {
+            $summary['summary_text'] = $summarytext;
+        }
+
+        $outcome = trim((string)($params['outcome'] ?? ''));
+        if ($outcome !== '') {
+            $summary['outcome'] = $outcome;
+        }
+
+        $durationsec = (int)($params['duration_sec'] ?? 0);
+        if ($durationsec > 0) {
+            $summary['duration_sec'] = $durationsec;
+        }
+
+        $payloadjson = trim((string)($params['payload_json'] ?? ''));
+        if ($payloadjson !== '') {
+            $payload = self::decode_json_object($payloadjson);
+            if (!empty($payload)) {
+                $summary['payload'] = $payload;
+            }
+        }
+
+        return $summary;
+    }
+
+    private static function find_review_task_for_completion(
+        int $userid,
+        int $courseid,
+        array $params
+    ): array {
+        global $DB;
+
+        $reviewid = !empty($params['review_task_id']) ? (int)$params['review_task_id'] : (int)($params['review_id'] ?? 0);
+        if ($reviewid > 0) {
+            $record = $DB->get_record('local_mathstate_review_task', [
+                'id' => $reviewid,
+                'userid' => $userid,
+                'courseid' => $courseid,
+            ], '*', IGNORE_MISSING);
+            return [$record, $record ? (string)$record->target_type : '', $record ? (string)$record->target_ref : ''];
+        }
+
+        $targettype = trim((string)($params['target_type'] ?? ''));
+        $targetref = trim((string)($params['target_ref'] ?? ''));
+
+        $sessionkey = trim((string)($params['session_id'] ?? ''));
+        if ($sessionkey === '') {
+            $sessionkey = trim((string)($params['session_key'] ?? ''));
+        }
+        $lessonkey = trim((string)($params['lesson_key'] ?? ''));
+
+        if ($lessonkey === '' && $sessionkey !== '') {
+            $session = $DB->get_record('local_mathstate_lesson_session', [
+                'session_key' => $sessionkey,
+                'userid' => $userid,
+                'courseid' => $courseid,
+            ], '*', IGNORE_MISSING);
+            if ($session && !empty($session->lesson_key)) {
+                $lessonkey = (string)$session->lesson_key;
+            }
+        }
+
+        if ($targetref === '' && $lessonkey !== '') {
+            $targettype = $targettype !== '' ? $targettype : 'lesson';
+            $targetref = $lessonkey;
+        } else if ($targetref === '' && $sessionkey !== '') {
+            $targettype = $targettype !== '' ? $targettype : 'session';
+            $targetref = $sessionkey;
+        }
+
+        if ($targettype === '' || $targetref === '') {
+            return [null, $targettype, $targetref];
+        }
+
+        $record = $DB->get_record('local_mathstate_review_task', [
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'target_type' => $targettype,
+            'target_ref' => $targetref,
+        ], '*', IGNORE_MISSING);
+
+        return [$record, $targettype, $targetref];
+    }
+
     public static function std_kp_upsert_batch_parameters(): external_function_parameters {
         return new external_function_parameters([
             'items' => new external_multiple_structure(
@@ -733,22 +831,27 @@ class local_mathstate_external extends external_api {
                 ]),
                 'Question bridge items'
             ),
+            'dry_run' => new external_value(PARAM_BOOL, 'Resolve only, do not write rows', VALUE_DEFAULT, false),
         ]);
     }
 
-    public static function question_map_sync_batch(array $items): array {
+    public static function question_map_sync_batch(array $items, bool $dryrun = false): array {
         self::system_context(true);
-        $params = self::validate_parameters(self::question_map_sync_batch_parameters(), ['items' => $items]);
+        $params = self::validate_parameters(self::question_map_sync_batch_parameters(), ['items' => $items, 'dry_run' => $dryrun]);
         if (count($params['items']) > self::MAX_BATCH_ITEMS) {
             throw new moodle_exception('Too many items in batch.');
         }
 
-        return \local_mathstate\local\storage\question_map_store::sync_sidecar_batch($params['items']);
+        return \local_mathstate\local\storage\question_map_store::sync_sidecar_batch(
+            $params['items'],
+            !empty($params['dry_run'])
+        );
     }
 
     public static function question_map_sync_batch_returns(): external_single_structure {
         return new external_single_structure([
             'ok' => new external_value(PARAM_BOOL, 'Success'),
+            'dry_run' => new external_value(PARAM_BOOL, 'Dry run mode'),
             'synced' => new external_multiple_structure(
                 new external_single_structure([
                     'source_id' => new external_value(PARAM_RAW, 'Source id'),
@@ -835,6 +938,9 @@ class local_mathstate_external extends external_api {
                 'review_status' => (string)($record->review_status ?? ''),
                 'review_notes' => (string)($record->review_notes ?? ''),
                 'metadata_json' => (string)($record->metadata_json ?? ''),
+                'chapter' => self::metadata_string((string)($record->metadata_json ?? ''), 'normalized_chapter_key'),
+                'section' => self::metadata_string((string)($record->metadata_json ?? ''), 'normalized_section_key'),
+                'source_question_name' => self::metadata_string((string)($record->metadata_json ?? ''), 'source_question_name'),
                 'timemodified' => (int)($record->timemodified ?? 0),
             ];
         }
@@ -872,6 +978,9 @@ class local_mathstate_external extends external_api {
                     'review_status' => new external_value(PARAM_RAW, 'Review status', VALUE_OPTIONAL),
                     'review_notes' => new external_value(PARAM_RAW, 'Review notes', VALUE_OPTIONAL),
                     'metadata_json' => new external_value(PARAM_RAW, 'Metadata JSON', VALUE_OPTIONAL),
+                    'chapter' => new external_value(PARAM_RAW, 'Chapter key', VALUE_OPTIONAL),
+                    'section' => new external_value(PARAM_RAW, 'Section key', VALUE_OPTIONAL),
+                    'source_question_name' => new external_value(PARAM_RAW, 'Source question name', VALUE_OPTIONAL),
                     'timemodified' => new external_value(PARAM_INT, 'Modified timestamp'),
                 ])
             ),
@@ -1399,12 +1508,18 @@ class local_mathstate_external extends external_api {
         return new external_function_parameters([
             'courseid' => new external_value(PARAM_INT, 'Course id'),
             'userid' => new external_value(PARAM_INT, 'User id, 0 means current token user', VALUE_DEFAULT, 0),
-            'session_key' => new external_value(PARAM_RAW, 'Session key'),
+            'session_key' => new external_value(PARAM_RAW, 'Session key', VALUE_DEFAULT, ''),
+            'session_id' => new external_value(PARAM_RAW, 'Compatibility alias for session key', VALUE_DEFAULT, ''),
             'status' => new external_value(PARAM_RAW, 'Final status', VALUE_DEFAULT, 'completed'),
             'ended_at' => new external_value(PARAM_INT, 'End timestamp, 0 means now', VALUE_DEFAULT, 0),
+            'finished_at' => new external_value(PARAM_INT, 'Compatibility end timestamp', VALUE_DEFAULT, 0),
             'source' => new external_value(PARAM_RAW, 'Source', VALUE_DEFAULT, 'agent'),
             'progress_json' => new external_value(PARAM_RAW, 'Progress JSON', VALUE_DEFAULT, ''),
             'summary_json' => new external_value(PARAM_RAW, 'Summary JSON', VALUE_DEFAULT, ''),
+            'summary_text' => new external_value(PARAM_RAW, 'Compatibility summary text', VALUE_DEFAULT, ''),
+            'outcome' => new external_value(PARAM_RAW, 'Compatibility outcome field', VALUE_DEFAULT, ''),
+            'duration_sec' => new external_value(PARAM_INT, 'Compatibility duration', VALUE_DEFAULT, 0),
+            'payload_json' => new external_value(PARAM_RAW, 'Compatibility payload JSON', VALUE_DEFAULT, ''),
         ]);
     }
 
@@ -1412,22 +1527,34 @@ class local_mathstate_external extends external_api {
         int $courseid,
         int $userid = 0,
         string $sessionkey = '',
+        string $sessionid = '',
         string $status = 'completed',
         int $endedat = 0,
+        int $finishedat = 0,
         string $source = 'agent',
         string $progressjson = '',
-        string $summaryjson = ''
+        string $summaryjson = '',
+        string $summarytext = '',
+        string $outcome = '',
+        int $durationsec = 0,
+        string $payloadjson = ''
     ): array {
         global $DB;
         $params = self::validate_parameters(self::lesson_finish_parameters(), [
             'courseid' => $courseid,
             'userid' => $userid,
             'session_key' => $sessionkey,
+            'session_id' => $sessionid,
             'status' => $status,
             'ended_at' => $endedat,
+            'finished_at' => $finishedat,
             'source' => $source,
             'progress_json' => $progressjson,
             'summary_json' => $summaryjson,
+            'summary_text' => $summarytext,
+            'outcome' => $outcome,
+            'duration_sec' => $durationsec,
+            'payload_json' => $payloadjson,
         ]);
 
         $userid = self::resolve_userid((int)$params['userid']);
@@ -1436,9 +1563,14 @@ class local_mathstate_external extends external_api {
 
         $sessionkey = trim((string)$params['session_key']);
         if ($sessionkey === '') {
-            throw new invalid_parameter_exception('session_key is required');
+            $sessionkey = trim((string)$params['session_id']);
         }
-        $timestamp = !empty($params['ended_at']) ? (int)$params['ended_at'] : time();
+        if ($sessionkey === '') {
+            throw new invalid_parameter_exception('session_key/session_id is required');
+        }
+        $timestamp = !empty($params['ended_at'])
+            ? (int)$params['ended_at']
+            : (!empty($params['finished_at']) ? (int)$params['finished_at'] : time());
         $existing = $DB->get_record('local_mathstate_lesson_session', ['session_key' => $sessionkey], '*', IGNORE_MISSING);
         if ($existing && ((int)$existing->userid !== $userid || (int)$existing->courseid !== $courseid)) {
             throw new moodle_exception('Session key does not match current user/course.');
@@ -1454,9 +1586,7 @@ class local_mathstate_external extends external_api {
             'progress' => trim((string)$params['progress_json']) !== ''
                 ? self::decode_json_object((string)$params['progress_json'])
                 : self::decode_json_object((string)($existing->progress_json ?? '')),
-            'summary' => trim((string)$params['summary_json']) !== ''
-                ? self::decode_json_object((string)$params['summary_json'])
-                : self::decode_json_object((string)($existing->summary_json ?? '')),
+            'summary' => self::normalize_lesson_summary($params, $existing),
             'started_at' => $existing && !empty($existing->started_at) ? (int)$existing->started_at : $timestamp,
             'ended_at' => $timestamp,
             'last_event_at' => $timestamp,
@@ -1472,6 +1602,7 @@ class local_mathstate_external extends external_api {
             'userid' => $userid,
             'courseid' => $courseid,
             'session_key' => $sessionkey,
+            'session_id' => $sessionkey,
             'status' => (string)$items[0]['status'],
             'ended_at' => $timestamp,
             'record_id' => (int)$result['record_id'],
@@ -1485,6 +1616,7 @@ class local_mathstate_external extends external_api {
             'userid' => new external_value(PARAM_INT, 'User id'),
             'courseid' => new external_value(PARAM_INT, 'Course id'),
             'session_key' => new external_value(PARAM_RAW, 'Session key'),
+            'session_id' => new external_value(PARAM_RAW, 'Compatibility alias for session key'),
             'status' => new external_value(PARAM_RAW, 'Session status'),
             'ended_at' => new external_value(PARAM_INT, 'End timestamp'),
             'record_id' => new external_value(PARAM_INT, 'Lesson session row id'),
@@ -1608,12 +1740,17 @@ class local_mathstate_external extends external_api {
             'courseid' => new external_value(PARAM_INT, 'Course id'),
             'userid' => new external_value(PARAM_INT, 'User id, 0 means current token user', VALUE_DEFAULT, 0),
             'review_id' => new external_value(PARAM_INT, 'Review task id', VALUE_DEFAULT, 0),
+            'review_task_id' => new external_value(PARAM_INT, 'Compatibility review task id', VALUE_DEFAULT, 0),
             'target_type' => new external_value(PARAM_RAW, 'Target type fallback', VALUE_DEFAULT, ''),
             'target_ref' => new external_value(PARAM_RAW, 'Target ref fallback', VALUE_DEFAULT, ''),
+            'session_id' => new external_value(PARAM_RAW, 'Compatibility session id/session key', VALUE_DEFAULT, ''),
+            'session_key' => new external_value(PARAM_RAW, 'Session key alias', VALUE_DEFAULT, ''),
+            'lesson_key' => new external_value(PARAM_RAW, 'Lesson key', VALUE_DEFAULT, ''),
             'status' => new external_value(PARAM_RAW, 'Completion status', VALUE_DEFAULT, 'done'),
             'completed_at' => new external_value(PARAM_INT, 'Completed timestamp, 0 means now', VALUE_DEFAULT, 0),
             'linked_doc_url' => new external_value(PARAM_RAW, 'Linked doc URL', VALUE_DEFAULT, ''),
             'note' => new external_value(PARAM_RAW, 'Completion note', VALUE_DEFAULT, ''),
+            'completion_note' => new external_value(PARAM_RAW, 'Compatibility completion note', VALUE_DEFAULT, ''),
         ]);
     }
 
@@ -1621,60 +1758,88 @@ class local_mathstate_external extends external_api {
         int $courseid,
         int $userid = 0,
         int $reviewid = 0,
+        int $reviewtaskid = 0,
         string $targettype = '',
         string $targetref = '',
+        string $sessionid = '',
+        string $sessionkey = '',
+        string $lessonkey = '',
         string $status = 'done',
         int $completedat = 0,
         string $linkeddocurl = '',
-        string $note = ''
+        string $note = '',
+        string $completionnote = ''
     ): array {
-        global $DB;
         $params = self::validate_parameters(self::review_complete_parameters(), [
             'courseid' => $courseid,
             'userid' => $userid,
             'review_id' => $reviewid,
+            'review_task_id' => $reviewtaskid,
             'target_type' => $targettype,
             'target_ref' => $targetref,
+            'session_id' => $sessionid,
+            'session_key' => $sessionkey,
+            'lesson_key' => $lessonkey,
             'status' => $status,
             'completed_at' => $completedat,
             'linked_doc_url' => $linkeddocurl,
             'note' => $note,
+            'completion_note' => $completionnote,
         ]);
 
         $userid = self::resolve_userid((int)$params['userid']);
         $courseid = (int)$params['courseid'];
         self::require_course_user_write($courseid, $userid);
 
-        $record = null;
-        if (!empty($params['review_id'])) {
-            $record = $DB->get_record('local_mathstate_review_task', [
-                'id' => (int)$params['review_id'],
-                'userid' => $userid,
-                'courseid' => $courseid,
-            ], '*', IGNORE_MISSING);
-        } else {
-            $targettype = trim((string)$params['target_type']);
-            $targetref = trim((string)$params['target_ref']);
-            if ($targettype === '' || $targetref === '') {
-                throw new invalid_parameter_exception('review_id or target_type+target_ref is required');
-            }
-            $record = $DB->get_record('local_mathstate_review_task', [
-                'userid' => $userid,
-                'courseid' => $courseid,
-                'target_type' => $targettype,
-                'target_ref' => $targetref,
-            ], '*', IGNORE_MISSING);
-        }
-
+        [$record, $resolvedtype, $resolvedref] = self::find_review_task_for_completion($userid, $courseid, $params);
         if (!$record) {
-            throw new moodle_exception('Review task not found.');
+            if ($resolvedtype === '' || $resolvedref === '') {
+                throw new invalid_parameter_exception(
+                    'review_task_id/review_id or target/session/lesson information is required'
+                );
+            }
+
+            $created = \local_mathstate\local\storage\runtime_store::upsert_reviews([[
+                'userid' => $userid,
+                'courseid' => $courseid,
+                'target_type' => $resolvedtype,
+                'target_ref' => $resolvedref,
+                'title' => 'Review ' . $resolvedref,
+                'task_kind' => 'review',
+                'priority' => 0.0,
+                'source_reason' => 'completion-compat',
+                'payload' => [],
+                'status' => 'todo',
+                'due_at' => 0,
+                'completed_at' => 0,
+                'linked_doc_url' => '',
+            ]]);
+            $record = (object)[
+                'id' => (int)($created[0]['record_id'] ?? 0),
+                'userid' => $userid,
+                'courseid' => $courseid,
+                'target_type' => $resolvedtype,
+                'target_ref' => $resolvedref,
+                'title' => 'Review ' . $resolvedref,
+                'task_kind' => 'review',
+                'priority' => 0.0,
+                'source_reason' => 'completion-compat',
+                'due_at' => null,
+                'linked_doc_url' => '',
+                'recommended_payload_json' => '',
+            ];
         }
 
         $payload = self::decode_json_object((string)($record->recommended_payload_json ?? ''));
-        if (trim((string)$params['note']) !== '') {
-            $payload['completion_note'] = trim((string)$params['note']);
+        $note = trim((string)$params['note']);
+        if ($note === '') {
+            $note = trim((string)$params['completion_note']);
+        }
+        if ($note !== '') {
+            $payload['completion_note'] = $note;
         }
         $completedat = !empty($params['completed_at']) ? (int)$params['completed_at'] : time();
+        $status = trim((string)$params['status']) !== '' ? trim((string)$params['status']) : 'done';
         $results = \local_mathstate\local\storage\runtime_store::upsert_reviews([[
             'userid' => $userid,
             'courseid' => $courseid,
@@ -1685,7 +1850,7 @@ class local_mathstate_external extends external_api {
             'priority' => (float)$record->priority,
             'source_reason' => (string)$record->source_reason,
             'payload' => $payload,
-            'status' => trim((string)$params['status']) !== '' ? trim((string)$params['status']) : 'done',
+            'status' => $status,
             'due_at' => (int)($record->due_at ?? 0),
             'completed_at' => $completedat,
             'linked_doc_url' => trim((string)$params['linked_doc_url']) !== ''
@@ -1696,12 +1861,13 @@ class local_mathstate_external extends external_api {
 
         return [
             'ok' => true,
+            'review_task_id' => (int)$record->id,
             'review_id' => (int)$record->id,
             'userid' => $userid,
             'courseid' => $courseid,
             'target_type' => (string)$record->target_type,
             'target_ref' => (string)$record->target_ref,
-            'status' => trim((string)$params['status']) !== '' ? trim((string)$params['status']) : 'done',
+            'status' => $status,
             'completed_at' => $completedat,
             'record_id' => (int)$result['record_id'],
             'action' => (string)$result['action'],
@@ -1711,6 +1877,7 @@ class local_mathstate_external extends external_api {
     public static function review_complete_returns(): external_single_structure {
         return new external_single_structure([
             'ok' => new external_value(PARAM_BOOL, 'Success'),
+            'review_task_id' => new external_value(PARAM_INT, 'Stable review task id'),
             'review_id' => new external_value(PARAM_INT, 'Review task id'),
             'userid' => new external_value(PARAM_INT, 'User id'),
             'courseid' => new external_value(PARAM_INT, 'Course id'),
@@ -1733,6 +1900,7 @@ class local_mathstate_external extends external_api {
             'doc_ref' => new external_value(PARAM_RAW, 'Doc ref', VALUE_DEFAULT, ''),
             'provider' => new external_value(PARAM_RAW, 'Provider', VALUE_DEFAULT, 'agent'),
             'job_type' => new external_value(PARAM_RAW, 'Job type', VALUE_DEFAULT, 'doc'),
+            'doc_type' => new external_value(PARAM_RAW, 'Compatibility document type', VALUE_DEFAULT, ''),
             'request_payload_json' => new external_value(PARAM_RAW, 'Request payload JSON', VALUE_DEFAULT, ''),
             'queued_at' => new external_value(PARAM_INT, 'Queued timestamp, 0 means now', VALUE_DEFAULT, 0),
         ]);
@@ -1747,6 +1915,7 @@ class local_mathstate_external extends external_api {
         string $docref = '',
         string $provider = 'agent',
         string $jobtype = 'doc',
+        string $doctype = '',
         string $requestpayloadjson = '',
         int $queuedat = 0
     ): array {
@@ -1759,6 +1928,7 @@ class local_mathstate_external extends external_api {
             'doc_ref' => $docref,
             'provider' => $provider,
             'job_type' => $jobtype,
+            'doc_type' => $doctype,
             'request_payload_json' => $requestpayloadjson,
             'queued_at' => $queuedat,
         ]);
@@ -1772,6 +1942,13 @@ class local_mathstate_external extends external_api {
             $jobkey = self::build_job_key($userid, $courseid);
         }
         $queuedat = !empty($params['queued_at']) ? (int)$params['queued_at'] : time();
+        $jobtype = trim((string)$params['job_type']);
+        if ($jobtype === '') {
+            $jobtype = trim((string)$params['doc_type']);
+        }
+        if ($jobtype === '') {
+            $jobtype = 'doc';
+        }
 
         $results = \local_mathstate\local\storage\runtime_store::upsert_doc_jobs([[
             'job_key' => $jobkey,
@@ -1781,7 +1958,7 @@ class local_mathstate_external extends external_api {
             'target_ref' => (string)$params['target_ref'],
             'doc_ref' => (string)$params['doc_ref'],
             'provider' => (string)$params['provider'],
-            'job_type' => (string)$params['job_type'],
+            'job_type' => $jobtype,
             'status' => 'queued',
             'request_payload' => self::decode_json_object((string)$params['request_payload_json']),
             'result_payload' => [],
@@ -1794,6 +1971,7 @@ class local_mathstate_external extends external_api {
         return [
             'ok' => true,
             'job_key' => $jobkey,
+            'doc_job_id' => (int)$result['record_id'],
             'userid' => $userid,
             'courseid' => $courseid,
             'status' => 'queued',
@@ -1807,6 +1985,7 @@ class local_mathstate_external extends external_api {
         return new external_single_structure([
             'ok' => new external_value(PARAM_BOOL, 'Success'),
             'job_key' => new external_value(PARAM_RAW, 'Job key'),
+            'doc_job_id' => new external_value(PARAM_INT, 'Stable doc job id'),
             'userid' => new external_value(PARAM_INT, 'User id'),
             'courseid' => new external_value(PARAM_INT, 'Course id'),
             'status' => new external_value(PARAM_RAW, 'Job status'),
