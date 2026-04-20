@@ -144,5 +144,10 @@ function xmldb_local_mathstate_upgrade(int $oldversion): bool {
         upgrade_plugin_savepoint(true, 2026041800, 'local', 'mathstate');
     }
 
+    if ($oldversion < 2026042000) {
+        // Video progress runtime aggregation/read APIs are code-only in this upgrade.
+        upgrade_plugin_savepoint(true, 2026042000, 'local', 'mathstate');
+    }
+
     return true;
 }
