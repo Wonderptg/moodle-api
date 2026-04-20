@@ -464,6 +464,27 @@ class local_mathstate_external extends external_api {
         ]);
     }
 
+    private static function video_progress_item_structure(): external_single_structure {
+        return new external_single_structure([
+            'session_key' => new external_value(PARAM_RAW, 'Session key'),
+            'lesson_key' => new external_value(PARAM_RAW, 'Lesson key'),
+            'cmid' => new external_value(PARAM_INT, 'Lesson session course module id'),
+            'resource_course_id' => new external_value(PARAM_INT, 'Resource source course id'),
+            'resource_cmid' => new external_value(PARAM_INT, 'Resource course module id'),
+            'duration_sec' => new external_value(PARAM_FLOAT, 'Video duration seconds'),
+            'watched_seconds' => new external_value(PARAM_FLOAT, 'Aggregated watched seconds'),
+            'coverage_ratio' => new external_value(PARAM_FLOAT, 'Coverage ratio 0..1'),
+            'last_position_sec' => new external_value(PARAM_FLOAT, 'Last playback position in seconds'),
+            'completed' => new external_value(PARAM_BOOL, 'Whether the video was completed'),
+            'status' => new external_value(PARAM_RAW, 'Lesson session status'),
+            'started_at' => new external_value(PARAM_INT, 'Session started timestamp'),
+            'ended_at' => new external_value(PARAM_INT, 'Session ended timestamp'),
+            'last_event_at' => new external_value(PARAM_INT, 'Last event timestamp'),
+            'source' => new external_value(PARAM_RAW, 'Source label'),
+            'updated_at' => new external_value(PARAM_INT, 'Video aggregate updated timestamp'),
+        ]);
+    }
+
     private static function decode_json_object(string $value): array {
         $value = trim($value);
         if ($value === '') {
@@ -2145,6 +2166,72 @@ class local_mathstate_external extends external_api {
         ]);
     }
 
+    public static function video_progress_summary_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'userid' => new external_value(PARAM_INT, 'User id, 0 means current user', VALUE_DEFAULT, 0),
+            'session_key' => new external_value(PARAM_RAW, 'Optional session key filter', VALUE_DEFAULT, ''),
+            'lesson_key' => new external_value(PARAM_RAW, 'Optional lesson key filter', VALUE_DEFAULT, ''),
+            'cmid' => new external_value(PARAM_INT, 'Optional session cmid filter', VALUE_DEFAULT, 0),
+            'resource_course_id' => new external_value(PARAM_INT, 'Optional source course id filter', VALUE_DEFAULT, 0),
+            'resource_cmid' => new external_value(PARAM_INT, 'Optional source cmid filter', VALUE_DEFAULT, 0),
+            'limit' => new external_value(PARAM_INT, 'Maximum summary items to return', VALUE_DEFAULT, 50),
+        ]);
+    }
+
+    public static function video_progress_summary(
+        int $courseid,
+        int $userid = 0,
+        string $sessionkey = '',
+        string $lessonkey = '',
+        int $cmid = 0,
+        int $resourcecourseid = 0,
+        int $resourcecmid = 0,
+        int $limit = 50
+    ): array {
+        $params = self::validate_parameters(self::video_progress_summary_parameters(), [
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'session_key' => $sessionkey,
+            'lesson_key' => $lessonkey,
+            'cmid' => $cmid,
+            'resource_course_id' => $resourcecourseid,
+            'resource_cmid' => $resourcecmid,
+            'limit' => $limit,
+        ]);
+
+        $userid = self::resolve_userid((int)$params['userid']);
+        $courseid = (int)$params['courseid'];
+        self::require_course_user_view($courseid, $userid);
+
+        $items = \local_mathstate\local\storage\runtime_store::video_progress_summaries($userid, $courseid, [
+            'session_key' => (string)$params['session_key'],
+            'lesson_key' => (string)$params['lesson_key'],
+            'cmid' => (int)$params['cmid'],
+            'resource_course_id' => (int)$params['resource_course_id'],
+            'resource_cmid' => (int)$params['resource_cmid'],
+            'limit' => (int)$params['limit'],
+        ]);
+
+        return [
+            'ok' => true,
+            'userid' => $userid,
+            'courseid' => $courseid,
+            'count' => count($items),
+            'items' => $items,
+        ];
+    }
+
+    public static function video_progress_summary_returns(): external_single_structure {
+        return new external_single_structure([
+            'ok' => new external_value(PARAM_BOOL, 'Success'),
+            'userid' => new external_value(PARAM_INT, 'User id'),
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'count' => new external_value(PARAM_INT, 'Summary item count'),
+            'items' => new external_multiple_structure(self::video_progress_item_structure()),
+        ]);
+    }
+
     public static function student_summary_parameters(): external_function_parameters {
         return new external_function_parameters([
             'courseid' => new external_value(PARAM_INT, 'Course id'),
@@ -2152,10 +2239,18 @@ class local_mathstate_external extends external_api {
             'include_kp_states' => new external_value(PARAM_BOOL, 'Include knowledge point states', VALUE_DEFAULT, true),
             'include_qtype_states' => new external_value(PARAM_BOOL, 'Include question type states', VALUE_DEFAULT, true),
             'include_due_tasks' => new external_value(PARAM_BOOL, 'Include due tasks', VALUE_DEFAULT, true),
+            'include_video_progress' => new external_value(PARAM_BOOL, 'Include video progress summary', VALUE_DEFAULT, true),
         ]);
     }
 
-    public static function student_summary(int $courseid, int $userid = 0, bool $includekpstates = true, bool $includeqtypestates = true, bool $includeduetasks = true): array {
+    public static function student_summary(
+        int $courseid,
+        int $userid = 0,
+        bool $includekpstates = true,
+        bool $includeqtypestates = true,
+        bool $includeduetasks = true,
+        bool $includevideoprogress = true
+    ): array {
         global $DB;
         $params = self::validate_parameters(self::student_summary_parameters(), [
             'courseid' => $courseid,
@@ -2163,6 +2258,7 @@ class local_mathstate_external extends external_api {
             'include_kp_states' => $includekpstates,
             'include_qtype_states' => $includeqtypestates,
             'include_due_tasks' => $includeduetasks,
+            'include_video_progress' => $includevideoprogress,
         ]);
 
         $userid = self::resolve_userid((int)$params['userid']);
@@ -2236,6 +2332,13 @@ class local_mathstate_external extends external_api {
             }
         }
 
+        $videoprogress = [];
+        if (!empty($params['include_video_progress'])) {
+            $videoprogress = \local_mathstate\local\storage\runtime_store::video_progress_summaries($userid, $courseid, [
+                'limit' => 50,
+            ]);
+        }
+
         return [
             'ok' => true,
             'userid' => $userid,
@@ -2243,6 +2346,7 @@ class local_mathstate_external extends external_api {
             'kp_states' => $kpstates,
             'qtype_states' => $qtypestates,
             'due_tasks' => $duetasks,
+            'video_progress' => $videoprogress,
         ];
     }
 
@@ -2254,6 +2358,7 @@ class local_mathstate_external extends external_api {
             'kp_states' => new external_multiple_structure(self::state_item_structure('kg_id', 'Knowledge point id')),
             'qtype_states' => new external_multiple_structure(self::state_item_structure('qg_id', 'Question type id')),
             'due_tasks' => new external_multiple_structure(self::review_task_structure()),
+            'video_progress' => new external_multiple_structure(self::video_progress_item_structure()),
         ]);
     }
 

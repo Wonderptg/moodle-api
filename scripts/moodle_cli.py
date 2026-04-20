@@ -2784,6 +2784,7 @@ def command_mathstate_student_summary(cli: "MoodleCLI", args: argparse.Namespace
         "include_kp_states": args.include_kp_states,
         "include_qtype_states": args.include_qtype_states,
         "include_due_tasks": args.include_due_tasks,
+        "include_video_progress": args.include_video_progress,
     })
 
 
@@ -2793,6 +2794,19 @@ def command_mathstate_reviews_due(cli: "MoodleCLI", args: argparse.Namespace) ->
         "userid": args.user_id,
         "limit": args.limit,
         "due_before": args.due_before,
+    })
+
+
+def command_mathstate_video_progress_summary(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_video_progress_summary", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "session_key": args.session_key,
+        "lesson_key": args.lesson_key,
+        "cmid": args.cmid,
+        "resource_course_id": args.resource_course_id,
+        "resource_cmid": args.resource_cmid,
+        "limit": args.limit,
     })
 
 
@@ -3793,6 +3807,8 @@ def build_parser() -> argparse.ArgumentParser:
     mathstate_summary.add_argument("--no-include-qtype-states", action="store_false", dest="include_qtype_states", help="Do not include question-type states")
     mathstate_summary.add_argument("--include-due-tasks", action="store_true", default=True, help="Include due tasks")
     mathstate_summary.add_argument("--no-include-due-tasks", action="store_false", dest="include_due_tasks", help="Do not include due tasks")
+    mathstate_summary.add_argument("--include-video-progress", action="store_true", default=True, help="Include aggregated video progress")
+    mathstate_summary.add_argument("--no-include-video-progress", action="store_false", dest="include_video_progress", help="Do not include aggregated video progress")
     mathstate_summary.set_defaults(handler=command_mathstate_student_summary, command_path=["mathstate", "student-summary"])
 
     mathstate_due = add_parser(mathstate_sub, "reviews-due", description="List due review tasks for a student")
@@ -3801,6 +3817,17 @@ def build_parser() -> argparse.ArgumentParser:
     mathstate_due.add_argument("--limit", type=int, default=50, help="Maximum tasks to return")
     mathstate_due.add_argument("--due-before", type=int, default=0, help="Upper due timestamp, 0 means now")
     mathstate_due.set_defaults(handler=command_mathstate_reviews_due, command_path=["mathstate", "reviews-due"])
+
+    mathstate_video = add_parser(mathstate_sub, "video-progress-summary", description="Show aggregated video progress from lesson sessions")
+    mathstate_video.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_video.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_video.add_argument("--session-key", default="", help="Optional session key filter")
+    mathstate_video.add_argument("--lesson-key", default="", help="Optional lesson key filter")
+    mathstate_video.add_argument("--cmid", type=int, default=0, help="Optional lesson session cmid filter")
+    mathstate_video.add_argument("--resource-course-id", type=int, default=0, help="Optional video source course id filter")
+    mathstate_video.add_argument("--resource-cmid", type=int, default=0, help="Optional video source cmid filter")
+    mathstate_video.add_argument("--limit", type=int, default=50, help="Maximum items to return")
+    mathstate_video.set_defaults(handler=command_mathstate_video_progress_summary, command_path=["mathstate", "video-progress-summary"])
 
     return parser
 

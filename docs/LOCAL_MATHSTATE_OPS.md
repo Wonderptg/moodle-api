@@ -11,7 +11,7 @@ php admin/cli/upgrade.php --non-interactive
 php admin/cli/purge_caches.php
 ```
 
-For this release (`local_mathstate` `2026041800`), no schema extension is required.
+For this release (`local_mathstate` `2026042000`), no schema extension is required.
 Only a code/version upgrade savepoint is applied.
 
 Contract reference:
@@ -58,6 +58,25 @@ The smoke test covers:
 - `local_mathstate_review_complete`
 - `local_mathstate_doc_publish_request`
 - `local_mathstate_next_recommendation`
+- `local_mathstate_video_progress_summary`
+
+Video progress smoke pattern:
+
+```bash
+python3 scripts/moodle_cli.py mathstate lesson-log-append \
+  --course-id 92 \
+  --user-id 2 \
+  --session-key sess-video-smoke \
+  --lesson-key lesson-video-smoke \
+  --event-type video_heartbeat \
+  --payload-json '{"resource_course_id":26,"resource_cmid":2905,"current_time_sec":120,"duration_sec":300,"watch_seconds_delta":15,"coverage_ratio":0.40}' \
+  --force
+
+python3 scripts/moodle_cli.py mathstate video-progress-summary \
+  --course-id 92 \
+  --user-id 2 \
+  --session-key sess-video-smoke
+```
 
 ## 4) Cleanup smoke data
 

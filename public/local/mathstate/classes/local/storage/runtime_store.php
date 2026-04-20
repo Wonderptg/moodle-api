@@ -28,6 +28,14 @@ defined('MOODLE_INTERNAL') || die();
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class runtime_store {
+    /** @var array<string, bool> */
+    private const VIDEO_EVENT_TYPES = [
+        'video_heartbeat' => true,
+        'video_paused' => true,
+        'video_seek' => true,
+        'video_completed' => true,
+    ];
+
     public static function record_learning_events(array $items): array {
         global $DB;
 
@@ -236,6 +244,70 @@ final class runtime_store {
         return $results;
     }
 
+    public static function video_progress_summaries(int $userid, int $courseid, array $filters = []): array {
+        global $DB;
+
+        $limit = max(1, min(200, (int)($filters['limit'] ?? 50)));
+        $params = [
+            'userid' => $userid,
+            'courseid' => $courseid,
+        ];
+        $where = 'userid = :userid AND courseid = :courseid';
+
+        $sessionkey = trim((string)($filters['session_key'] ?? ''));
+        if ($sessionkey !== '') {
+            $where .= ' AND session_key = :sessionkey';
+            $params['sessionkey'] = $sessionkey;
+        }
+
+        $lessonkey = trim((string)($filters['lesson_key'] ?? ''));
+        if ($lessonkey !== '') {
+            $where .= ' AND lesson_key = :lessonkey';
+            $params['lessonkey'] = $lessonkey;
+        }
+
+        $cmid = (int)($filters['cmid'] ?? 0);
+        if ($cmid > 0) {
+            $where .= ' AND cmid = :cmid';
+            $params['cmid'] = $cmid;
+        }
+
+        $records = $DB->get_records_select(
+            'local_mathstate_lesson_session',
+            $where,
+            $params,
+            'last_event_at DESC, timemodified DESC, id DESC'
+        );
+
+        $resourcecourseid = (int)($filters['resource_course_id'] ?? 0);
+        $resourcecmid = (int)($filters['resource_cmid'] ?? 0);
+        $items = [];
+        foreach ($records as $record) {
+            $progress = self::decode_json_object((string)($record->progress_json ?? ''));
+            $video = isset($progress['video_progress']) && is_array($progress['video_progress'])
+                ? $progress['video_progress']
+                : [];
+            if (empty($video)) {
+                continue;
+            }
+
+            $item = self::normalize_video_progress_item($record, $video);
+            if ($resourcecourseid > 0 && (int)$item['resource_course_id'] !== $resourcecourseid) {
+                continue;
+            }
+            if ($resourcecmid > 0 && (int)$item['resource_cmid'] !== $resourcecmid) {
+                continue;
+            }
+
+            $items[] = $item;
+            if (count($items) >= $limit) {
+                break;
+            }
+        }
+
+        return $items;
+    }
+
     private static function touch_lesson_session(\stdClass $event, int $timestamp): void {
         global $DB;
 
@@ -244,6 +316,14 @@ final class runtime_store {
         }
 
         $session = $DB->get_record('local_mathstate_lesson_session', ['session_key' => $event->session_key], '*', IGNORE_MISSING);
+        $progress = [];
+        if ($session && !empty($session->progress_json)) {
+            $progress = self::decode_json_object((string)$session->progress_json);
+        }
+        if (self::is_video_event_type((string)($event->event_type ?? ''))) {
+            $progress = self::merge_video_progress($progress, $event, $timestamp);
+        }
+
         if (!$session) {
             $DB->insert_record('local_mathstate_lesson_session', (object)[
                 'userid' => (int)$event->userid,
@@ -252,7 +332,7 @@ final class runtime_store {
                 'lesson_key' => normalizer::optional_text((string)($event->lesson_key ?? '')),
                 'cmid' => !empty($event->cmid) ? (int)$event->cmid : null,
                 'status' => 'active',
-                'progress_json' => normalizer::encode_json([]),
+                'progress_json' => normalizer::encode_json($progress),
                 'summary_json' => normalizer::encode_json([]),
                 'started_at' => $timestamp,
                 'ended_at' => null,
@@ -265,8 +345,128 @@ final class runtime_store {
         }
 
         $session->last_event_at = $timestamp;
+        if (empty($session->lesson_key) && !empty($event->lesson_key)) {
+            $session->lesson_key = (string)$event->lesson_key;
+        }
+        if (empty($session->cmid) && !empty($event->cmid)) {
+            $session->cmid = (int)$event->cmid;
+        }
+        if (!empty($progress)) {
+            $session->progress_json = normalizer::encode_json($progress);
+        }
         $session->timemodified = time();
         $DB->update_record('local_mathstate_lesson_session', $session);
+    }
+
+    private static function is_video_event_type(string $eventtype): bool {
+        return isset(self::VIDEO_EVENT_TYPES[strtolower(trim($eventtype))]);
+    }
+
+    private static function decode_json_object(string $value): array {
+        $value = trim($value);
+        if ($value === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private static function float_or_null($value): ?float {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        return round((float)$value, 4);
+    }
+
+    private static function clamp_ratio(float $ratio): float {
+        if ($ratio < 0.0) {
+            return 0.0;
+        }
+        if ($ratio > 1.0) {
+            return 1.0;
+        }
+        return round($ratio, 4);
+    }
+
+    private static function merge_video_progress(array $progress, \stdClass $event, int $timestamp): array {
+        $payload = self::decode_json_object((string)($event->payload_json ?? ''));
+        $video = isset($progress['video_progress']) && is_array($progress['video_progress'])
+            ? $progress['video_progress']
+            : [];
+
+        $duration = self::float_or_null($payload['duration_sec'] ?? ($video['duration_sec'] ?? null));
+        $position = self::float_or_null(
+            $payload['current_time_sec']
+            ?? $payload['position_sec']
+            ?? $payload['last_position_sec']
+            ?? ($video['last_position_sec'] ?? null)
+        );
+        $delta = max(0.0, (float)($payload['watch_seconds_delta'] ?? 0.0));
+        $watched = max(0.0, (float)($video['watched_seconds'] ?? 0.0)) + $delta;
+        if (array_key_exists('watched_seconds', $payload)) {
+            $watched = max($watched, max(0.0, (float)$payload['watched_seconds']));
+        }
+        if ($duration !== null && $duration > 0.0) {
+            $watched = min($watched, $duration);
+        }
+        $watched = round($watched, 2);
+
+        $incomingcoverage = self::float_or_null($payload['coverage_ratio'] ?? null);
+        $computedcoverage = ($duration !== null && $duration > 0.0)
+            ? self::clamp_ratio($watched / $duration)
+            : null;
+        $coverage = max(
+            self::clamp_ratio((float)($video['coverage_ratio'] ?? 0.0)),
+            $incomingcoverage !== null ? self::clamp_ratio($incomingcoverage) : 0.0,
+            $computedcoverage ?? 0.0
+        );
+
+        $completed = !empty($video['completed'])
+            || !empty($payload['completed'])
+            || strtolower((string)($event->event_type ?? '')) === 'video_completed';
+        if ($completed && $duration !== null && $duration > 0.0) {
+            $coverage = 1.0;
+            if ($position === null) {
+                $position = $duration;
+            }
+        }
+        $position = $position !== null ? round(max(0.0, $position), 2) : 0.0;
+
+        $progress['video_progress'] = [
+            'resource_course_id' => max(0, (int)($payload['resource_course_id'] ?? ($video['resource_course_id'] ?? 0))),
+            'resource_cmid' => max(0, (int)($payload['resource_cmid'] ?? ($video['resource_cmid'] ?? 0))),
+            'duration_sec' => $duration !== null ? round(max(0.0, $duration), 2) : 0.0,
+            'watched_seconds' => $watched,
+            'coverage_ratio' => round($coverage, 4),
+            'last_position_sec' => $position,
+            'completed' => $completed,
+            'last_event_type' => strtolower((string)($event->event_type ?? '')),
+            'updated_at' => $timestamp,
+        ];
+
+        return $progress;
+    }
+
+    private static function normalize_video_progress_item(\stdClass $record, array $video): array {
+        return [
+            'session_key' => (string)$record->session_key,
+            'lesson_key' => (string)($record->lesson_key ?? ''),
+            'cmid' => (int)($record->cmid ?? 0),
+            'resource_course_id' => max(0, (int)($video['resource_course_id'] ?? 0)),
+            'resource_cmid' => max(0, (int)($video['resource_cmid'] ?? 0)),
+            'duration_sec' => round(max(0.0, (float)($video['duration_sec'] ?? 0.0)), 2),
+            'watched_seconds' => round(max(0.0, (float)($video['watched_seconds'] ?? 0.0)), 2),
+            'coverage_ratio' => self::clamp_ratio((float)($video['coverage_ratio'] ?? 0.0)),
+            'last_position_sec' => round(max(0.0, (float)($video['last_position_sec'] ?? 0.0)), 2),
+            'completed' => !empty($video['completed']),
+            'status' => (string)($record->status ?? ''),
+            'started_at' => (int)($record->started_at ?? 0),
+            'ended_at' => (int)($record->ended_at ?? 0),
+            'last_event_at' => (int)($record->last_event_at ?? 0),
+            'source' => (string)($record->source ?? ''),
+            'updated_at' => (int)($video['updated_at'] ?? ($record->timemodified ?? 0)),
+        ];
     }
 
     private static function apply_state_updates(
