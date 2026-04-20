@@ -169,6 +169,14 @@ $functions = [
         'type' => 'read',
         'capabilities' => 'local/mathstate:view',
     ],
+    'local_mathstate_video_progress_summary' => [
+        'classname' => 'local_mathstate_external',
+        'methodname' => 'video_progress_summary',
+        'classpath' => 'local/mathstate/externallib.php',
+        'description' => 'Return aggregated video progress summary from lesson runtime sessions.',
+        'type' => 'read',
+        'capabilities' => 'local/mathstate:view, moodle/course:view',
+    ],
 ];
 
 $services = [
