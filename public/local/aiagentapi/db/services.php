@@ -249,6 +249,14 @@ $functions = [
         'type' => 'write',
         'capabilities' => 'local/aiagentapi:use, mod/quiz:preview',
     ],
+    'local_aiagentapi_practice_quiz_create_from_resource' => [
+        'classname' => 'local_aiagentapi_external',
+        'methodname' => 'practice_quiz_create_from_resource',
+        'classpath' => 'local/aiagentapi/externallib.php',
+        'description' => 'Create a post-lesson practice quiz from existing mapped question-bank questions.',
+        'type' => 'write',
+        'capabilities' => 'local/aiagentapi:use, moodle/course:manageactivities, mod/quiz:addinstance, moodle/question:useall',
+    ],
     'local_aiagentapi_calendar_publish_plan' => [
         'classname' => 'local_aiagentapi_external',
         'methodname' => 'calendar_publish_plan',

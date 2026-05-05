@@ -2290,6 +2290,29 @@ def command_quiz_list(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     })
 
 
+def command_quiz_create_practice(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    confirm_write(args, "create practice quiz")
+    return cli.call("local_aiagentapi_practice_quiz_create_from_resource", {
+        "idempotency_key": args.idempotency_key,
+        "courseid": args.course_id,
+        "cmid": args.cmid,
+        "lesson_key": args.lesson_key,
+        "title": args.title,
+        "count": args.count,
+        "section": args.section,
+        "categoryid": args.category_id,
+        "kg_ids": args.kg_id or [],
+        "qg_ids": args.qg_id or [],
+        "tags": args.tag or [],
+        "seed": args.seed,
+        "allow_partial": args.allow_partial,
+        "selection_mode": "random_category" if args.random else args.selection_mode,
+        "visible": args.visible,
+        "dry_run": args.dry_run,
+        "reason": args.reason,
+    })
+
+
 def command_quiz_attempts(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     return cli.call("local_aiagentapi_quiz_attempts_my", {
         "courseid": args.course_id,
@@ -3501,6 +3524,25 @@ def build_parser() -> argparse.ArgumentParser:
     quiz_list = add_parser(quiz_sub, "list", description="List quizzes in a course", aliases=["ls"])
     quiz_list.add_argument("--course-id", type=int, required=True, help="Course id")
     quiz_list.set_defaults(handler=command_quiz_list, command_path=["quiz", "list"])
+    quiz_create_practice = add_parser(quiz_sub, "create-practice", description="Create a post-lesson practice quiz from existing mapped questions")
+    quiz_create_practice.add_argument("--idempotency-key", required=True, help="Client idempotency key")
+    quiz_create_practice.add_argument("--course-id", type=int, required=True, help="Target course id")
+    quiz_create_practice.add_argument("--cmid", type=int, default=0, help="Optional lesson/resource cmid")
+    quiz_create_practice.add_argument("--lesson-key", default="", help="Optional lesson key")
+    quiz_create_practice.add_argument("--title", default="", help="Optional quiz title")
+    quiz_create_practice.add_argument("--count", type=int, default=5, help="Number of questions to add")
+    quiz_create_practice.add_argument("--section", type=int, default=0, help="Course section number, 0 means infer/default")
+    quiz_create_practice.add_argument("--category-id", type=int, default=0, help="Optional question category id")
+    quiz_create_practice.add_argument("--kg-id", action="append", default=[], help="Additional KG id (repeatable)")
+    quiz_create_practice.add_argument("--qg-id", action="append", default=[], help="Additional QG id (repeatable)")
+    quiz_create_practice.add_argument("--tag", action="append", default=[], help="Fallback text tag (repeatable)")
+    quiz_create_practice.add_argument("--seed", type=int, default=0, help="Optional random seed")
+    quiz_create_practice.add_argument("--allow-partial", action="store_true", help="Create with fewer than count questions when necessary")
+    quiz_create_practice.add_argument("--selection-mode", choices=["fixed", "random_category"], default="fixed", help="Question selection mode")
+    quiz_create_practice.add_argument("--random", action="store_true", help="Shortcut for --selection-mode random_category")
+    quiz_create_practice.add_argument("--visible", action="store_true", help="Make the created quiz visible to students")
+    quiz_create_practice.add_argument("--reason", default="", help="Audit reason")
+    quiz_create_practice.set_defaults(handler=command_quiz_create_practice, command_path=["quiz", "create-practice"])
     quiz_attempts = add_parser(quiz_sub, "attempts", description="List my quiz attempts")
     quiz_attempts.add_argument("--course-id", type=int, default=0, help="Optional course id")
     quiz_attempts.add_argument("--quiz-id", type=int, default=0, help="Optional quiz id")

@@ -503,6 +503,44 @@ bin/moodle --env-file .env.local --json \
   quiz list --course-id 12
 ```
 
+### Create a post-lesson practice quiz
+
+Creates a quiz from existing Moodle question-bank questions. The server picks questions from
+`local_oc_shell_resource_map` / `local_mathstate_question_map` first, then falls back to standard
+KG/QG Chinese names and explicit text tags. Created quizzes are hidden by default; pass
+`--visible` only when you want students to see it immediately.
+
+By default the quiz contains fixed question slots. Use `--random` or
+`--selection-mode random_category` to create Moodle native random slots from the selected question
+category. Random category mode depends on Moodle question categories/tags, so for precise random
+pools the question bank should keep each lesson or KG/QG pool in its own category or Moodle tags.
+
+```bash
+bin/moodle --env-file .env.local --json --dry-run \
+  quiz create-practice \
+  --idempotency-key practice-preview-001 \
+  --course-id 26 \
+  --cmid 2943 \
+  --count 5
+
+bin/moodle --env-file .env.local --json --force \
+  quiz create-practice \
+  --idempotency-key practice-create-001 \
+  --course-id 26 \
+  --cmid 2943 \
+  --count 5 \
+  --title "课后练习 - 1.3 集合间的基本运算"
+
+bin/moodle --env-file .env.local --json --force \
+  quiz create-practice \
+  --idempotency-key practice-random-001 \
+  --course-id 26 \
+  --cmid 2943 \
+  --count 5 \
+  --random \
+  --title "随机课后练习 - 1.3 集合间的基本运算"
+```
+
 ### List my quiz attempts
 
 ```bash
