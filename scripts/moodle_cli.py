@@ -175,6 +175,36 @@ def normalize_profile_name(name: str) -> str:
     return value
 
 
+def login_setup_hint(profile_name: str = DEFAULT_PROFILE_NAME, base_url: str = "") -> str:
+    profile_name = normalize_profile_name(profile_name)
+    setup_cmd = f"moodle setup --name {profile_name}"
+    if base_url:
+        setup_cmd += f" --base-url {normalize_base_url(base_url)}"
+    else:
+        setup_cmd += " --base-url <moodle-url>"
+    return (
+        "Run:\n"
+        f"  {setup_cmd}\n"
+        f"  moodle login --name {profile_name}\n"
+        f"  moodle status --name {profile_name}\n"
+        "Or set MOODLE_BASE_URL and MOODLE_WS_TOKEN in --env-file .env.local."
+    )
+
+
+def missing_base_url_error(profile_name: str = DEFAULT_PROFILE_NAME) -> CliError:
+    return CliError(
+        "missing Moodle base URL.\n" + login_setup_hint(profile_name),
+        EXIT_CONFIG,
+    )
+
+
+def missing_token_error(profile_name: str = DEFAULT_PROFILE_NAME, base_url: str = "") -> CliError:
+    return CliError(
+        "not logged in: missing Moodle web-service token.\n" + login_setup_hint(profile_name, base_url),
+        EXIT_CONFIG,
+    )
+
+
 def load_cli_config(config_dir: str) -> Dict[str, Any]:
     path = config_path_for_dir(config_dir)
     if not os.path.exists(path):
@@ -3126,6 +3156,17 @@ def command_profile_rename(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     }
 
 
+def command_setup(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    args.activate = True
+    result = command_config_init(cli, args)
+    profile_name = resolve_target_profile(args)
+    result["next_steps"] = [
+        f"moodle login --name {profile_name}",
+        f"moodle status --name {profile_name}",
+    ]
+    return result
+
+
 def command_doctor(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     profile_name = args.profile
     profile = get_profile(args.cli_config, profile_name)
@@ -3286,9 +3327,9 @@ class MoodleCLI:
         base_url = self.args.base_url
         token = self.args.token
         if not base_url:
-            raise CliError("missing base url (set --base-url or MOODLE_BASE_URL)", EXIT_CONFIG)
+            raise missing_base_url_error(getattr(self.args, "profile", DEFAULT_PROFILE_NAME))
         if not token:
-            raise CliError("missing token (set --token or MOODLE_WS_TOKEN)", EXIT_CONFIG)
+            raise missing_token_error(getattr(self.args, "profile", DEFAULT_PROFILE_NAME), base_url)
         return invoke_ws(base_url, token, wsfunction, params, self.args.timeout)
 
 
@@ -3320,6 +3361,14 @@ def add_parser(subparsers: argparse._SubParsersAction, name: str, *, description
     return parser
 
 
+def add_connection_flags(parser: argparse.ArgumentParser, *, include_token: bool = False) -> None:
+    # default=SUPPRESS lets subcommand flags override root flags without clobbering them when absent.
+    parser.add_argument("--base-url", default=argparse.SUPPRESS, help="Moodle base URL")
+    parser.add_argument("--service", default=argparse.SUPPRESS, help=f"External service shortname (default: {DEFAULT_SERVICE_SHORTNAME})")
+    if include_token:
+        parser.add_argument("--token", default=argparse.SUPPRESS, help="Web service token")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="moodle",
@@ -3338,8 +3387,32 @@ def build_parser() -> argparse.ArgumentParser:
     exit_codes_parser.set_defaults(handler=command_exit_codes, command_path=["exit-codes"])
 
     doctor_parser = add_parser(subparsers, "doctor", description="Health check config, auth, and connectivity")
+    add_connection_flags(doctor_parser, include_token=True)
     doctor_parser.add_argument("--offline", action="store_true", help="Skip network checks")
     doctor_parser.set_defaults(handler=command_doctor, command_path=["doctor"])
+
+    setup_parser = add_parser(subparsers, "setup", description="Create and activate a Moodle CLI profile")
+    setup_parser.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(setup_parser)
+    setup_parser.set_defaults(handler=command_setup, command_path=["setup"])
+
+    login_parser = add_parser(subparsers, "login", description="Login via browser/device flow or username/password")
+    login_parser.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(login_parser)
+    login_parser.add_argument("--username", default="", help="Moodle username")
+    login_parser.add_argument("--password", default="", help="Moodle password (omit to prompt interactively)")
+    login_parser.add_argument("--device-code", default="", help="Resume polling with an existing device code")
+    login_parser.add_argument("--expires-in", type=int, default=0, help="Device code lifetime when resuming polling")
+    login_parser.add_argument("--interval", type=int, default=0, help="Device poll interval when resuming polling")
+    login_parser.add_argument("--no-wait", action="store_true", help="Start browser/device login and return device code immediately")
+    login_parser.add_argument("--no-browser", action="store_true", help="Do not attempt to open the browser automatically")
+    login_parser.set_defaults(handler=command_auth_login, command_path=["login"])
+
+    status_parser = add_parser(subparsers, "status", description="Show current Moodle CLI auth status")
+    status_parser.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(status_parser, include_token=True)
+    status_parser.add_argument("--offline", action="store_true", help="Do not verify against the server")
+    status_parser.set_defaults(handler=command_auth_status, command_path=["status"])
 
     config_parser = add_parser(subparsers, "config", description="CLI profile and config helpers")
     config_sub = config_parser.add_subparsers(dest="_config_command")
@@ -3351,6 +3424,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_show.set_defaults(handler=command_config_show, command_path=["config", "show"])
     config_init = add_parser(config_sub, "init", description="Create or update a profile")
     config_init.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(config_init)
     config_init.add_argument("--activate", action="store_true", help="Make this profile current")
     config_init.set_defaults(handler=command_config_init, command_path=["config", "init"])
     config_use = add_parser(config_sub, "use", description="Switch current profile")
@@ -3364,6 +3438,7 @@ def build_parser() -> argparse.ArgumentParser:
     auth_sub = auth_parser.add_subparsers(dest="_auth_command")
     auth_login = add_parser(auth_sub, "login", description="Login via browser/device flow or username/password")
     auth_login.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(auth_login)
     auth_login.add_argument("--username", default="", help="Moodle username")
     auth_login.add_argument("--password", default="", help="Moodle password (omit to prompt interactively)")
     auth_login.add_argument("--device-code", default="", help="Resume polling with an existing device code")
@@ -3376,6 +3451,7 @@ def build_parser() -> argparse.ArgumentParser:
     auth_list.set_defaults(handler=command_auth_list, command_path=["auth", "list"])
     auth_status = add_parser(auth_sub, "status", description="Show current auth status")
     auth_status.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(auth_status, include_token=True)
     auth_status.add_argument("--offline", action="store_true", help="Do not verify against the server")
     auth_status.set_defaults(handler=command_auth_status, command_path=["auth", "status"])
     auth_logout = add_parser(auth_sub, "logout", description="Remove the stored token from a profile")
@@ -3391,6 +3467,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_use.set_defaults(handler=command_profile_use, command_path=["profile", "use"])
     profile_add = add_parser(profile_sub, "add", description="Add a new profile")
     profile_add.add_argument("--name", dest="profile_name", required=True, help="Profile name")
+    add_connection_flags(profile_add)
     profile_add.add_argument("--use", action="store_true", help="Make the profile current after adding")
     profile_add.set_defaults(handler=command_profile_add, command_path=["profile", "add"])
     profile_remove = add_parser(profile_sub, "remove", description="Remove a profile", aliases=["rm", "delete"])

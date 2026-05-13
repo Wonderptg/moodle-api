@@ -152,7 +152,7 @@ def generate_canonical_reference() -> str:
     groups = [
         (
             "Bootstrap and discovery",
-            {"context", "catalog", "schema", "whoami", "exit-codes", "agent"},
+            {"setup", "login", "status", "context", "catalog", "schema", "whoami", "exit-codes", "agent"},
         ),
         (
             "Course and activity reads",
@@ -212,6 +212,10 @@ def generate_canonical_reference() -> str:
         "--no-input",
         "--enable-commands",
         "--env-file",
+        "--profile",
+        "--base-url",
+        "--token",
+        "--service",
     ]
 
     lines = [
@@ -231,6 +235,8 @@ def generate_canonical_reference() -> str:
         "- Common flags: " + ", ".join(f"`{flag}`" for flag in root_flags),
         "- Write commands should use `--dry-run` first when supported, then rerun with `--force`.",
         "- `catalog get` and `context get` are the preferred first calls for discovery.",
+        "- First-time login should use `setup --name <profile> --base-url <url>`, then `login --name <profile>`, then `status --name <profile>`.",
+        "- In headless agent sessions, use `login --name <profile> --no-wait` and return the `verification_url` to the user.",
         "",
         "## Generated command inventory",
         "",
