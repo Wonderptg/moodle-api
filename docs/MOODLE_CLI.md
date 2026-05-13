@@ -46,6 +46,9 @@ Important:
 - `schema`
 - `exit-codes`
 - `doctor`
+- `setup`
+- `login`
+- `status`
 - `agent exit-codes`
 - `config list`
 - `config show`
@@ -119,6 +122,30 @@ Important:
 
 ## Quick start (new computer)
 
+### Fast path for AI agents
+
+Use these top-level aliases first. They are easier for agents to discover than
+the lower-level `config` / `auth` commands:
+
+```bash
+bin/moodle setup --name prod --base-url http://dzexam.cn
+bin/moodle login --name prod
+bin/moodle status --name prod
+bin/moodle --json context get
+```
+
+If `login` is running in a headless or background agent session, use:
+
+```bash
+bin/moodle login --name prod --no-wait
+```
+
+Then send the returned `verification_url` to the user and later resume polling:
+
+```bash
+bin/moodle login --name prod --device-code <DEVICE_CODE>
+```
+
 ### 1) Initialize local profile
 
 ```bash
@@ -129,6 +156,12 @@ bin/moodle config init --name prod --base-url http://dzexam.cn --activate
 
 ```bash
 bin/moodle auth login --name prod
+```
+
+Equivalent top-level alias:
+
+```bash
+bin/moodle login --name prod
 ```
 
 Non-interactive start + complete later:
@@ -149,6 +182,12 @@ bin/moodle auth login --name prod --username wonderhow --password '***'
 bin/moodle doctor
 bin/moodle --json auth status
 bin/moodle --json context get
+```
+
+Equivalent top-level alias:
+
+```bash
+bin/moodle --json status
 ```
 
 ## Output contract

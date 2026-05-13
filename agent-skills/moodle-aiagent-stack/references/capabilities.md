@@ -11,9 +11,11 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 
 ## Root contract
 
-- Common flags: `--json`, `--plain`, `--results-only`, `--select`, `--dry-run`, `--force`, `--no-input`, `--enable-commands`, `--env-file`
+- Common flags: `--json`, `--plain`, `--results-only`, `--select`, `--dry-run`, `--force`, `--no-input`, `--enable-commands`, `--env-file`, `--profile`, `--base-url`, `--token`, `--service`
 - Write commands should use `--dry-run` first when supported, then rerun with `--force`.
 - `catalog get` and `context get` are the preferred first calls for discovery.
+- First-time login should use `setup --name <profile> --base-url <url>`, then `login --name <profile>`, then `status --name <profile>`.
+- In headless agent sessions, use `login --name <profile> --no-wait` and return the `verification_url` to the user.
 
 ## Generated command inventory
 
@@ -23,7 +25,10 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 - `catalog get`
 - `context get`
 - `exit-codes`
+- `login`
 - `schema`
+- `setup`
+- `status`
 - `whoami`
 
 ### Course and activity reads
@@ -70,7 +75,6 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 - `quiz attempt-data`
 - `quiz attempt-summary`
 - `quiz attempts`
-- `quiz create-practice`
 - `quiz list`
 - `quiz resolve-random`
 - `quiz save-attempt`
@@ -112,7 +116,6 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 - `mathstate review-upsert`
 - `mathstate reviews-due`
 - `mathstate student-summary`
-- `mathstate video-progress-summary`
 - `profile add`
 - `profile list`
 - `profile remove`

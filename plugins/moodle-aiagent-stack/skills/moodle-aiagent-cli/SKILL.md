@@ -13,11 +13,50 @@ This is the platform-neutral skill source for the Moodle AI agent stack in this 
 
 Use it when an agent should operate through the repo's stable CLI and AI-friendly API instead of manual Moodle UI actions.
 
+## Environment choice
+
+For this repository, prefer the upgraded real-content rehearsal environment first:
+
+- real-content testing: `python3 scripts/moodle_cli.py --env-file .env.upgrade51.local --json ...`
+- seeded demo / local regression: `python3 scripts/moodle_cli.py --env-file .env.local --json ...`
+
+Use `.env.upgrade51.local` when the goal is to inspect real courses, real outlines, real quizzes, real calendar items, or student-facing upgraded behavior on `http://127.0.0.1:8003`.
+
+Use `.env.local` only when the goal is seeded deterministic regression on the local demo site at `http://127.0.0.1:8000`.
+
+## First-time login
+
+If a command fails with a missing token or missing base URL, do not keep guessing
+env files. Set up and verify a profile first:
+
+```bash
+python3 scripts/moodle_cli.py setup --name prod --base-url http://dzexam.cn
+python3 scripts/moodle_cli.py login --name prod
+python3 scripts/moodle_cli.py status --name prod
+```
+
+For headless agent sessions, start login without waiting and give the returned
+`verification_url` to the user:
+
+```bash
+python3 scripts/moodle_cli.py --json login --name prod --no-wait
+```
+
+The old explicit commands still work:
+
+```bash
+python3 scripts/moodle_cli.py config init --name prod --base-url http://dzexam.cn --activate
+python3 scripts/moodle_cli.py auth login --name prod
+python3 scripts/moodle_cli.py auth status --name prod
+```
+
 ## Canonical workflow
 
 1. Discover the current user and API surface first:
-   - `python3 scripts/moodle_cli.py --env-file .env.local --json context get`
-   - `python3 scripts/moodle_cli.py --env-file .env.local --json catalog get`
+   - real-content: `python3 scripts/moodle_cli.py --env-file .env.upgrade51.local --json context get`
+   - real-content: `python3 scripts/moodle_cli.py --env-file .env.upgrade51.local --json catalog get`
+   - demo regression: `python3 scripts/moodle_cli.py --env-file .env.local --json context get`
+   - demo regression: `python3 scripts/moodle_cli.py --env-file .env.local --json catalog get`
 2. For write operations, use `--dry-run` first when supported, then rerun with `--force`.
 3. Seed deterministic local fixtures before validating behavior:
    - `php scripts/seed_moodle_test_data.php`
