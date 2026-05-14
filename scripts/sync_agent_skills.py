@@ -34,7 +34,7 @@ ADAPTERS = [
         name="moodle-aiagent-cli",
         description=(
             "Use when working with the local Moodle AI agent stack in this repository: "
-            "reading or writing Moodle data through the AI-friendly API, using the project CLI, "
+            "reading or writing Moodle data through the remote WebService CLI, "
             "seeding demo data, running live regression, or extending `local_aiagentapi`. Trigger "
             "for tasks involving courses, calendar plans, assignments, forums, quizzes, question "
             "banks, or Moodle automation in this repo."
@@ -54,7 +54,7 @@ ADAPTERS = [
         name="moodle-aiagent-cli",
         description=(
             "Use when working with the local Moodle AI agent stack in this repository: "
-            "reading or writing Moodle data through the AI-friendly API, using the project CLI, "
+            "reading or writing Moodle data through the remote WebService CLI, "
             "seeding demo data, running live regression, or extending `local_aiagentapi`. Trigger "
             "for tasks involving courses, calendar plans, assignments, forums, quizzes, question "
             "banks, or Moodle automation in this repo."
@@ -67,13 +67,13 @@ ADAPTERS = [
         reference_path=ROOT / "skills" / "moodle-aiagent-cli" / "references" / "capabilities.md",
         name="moodle-aiagent-cli",
         description=(
-            "Use this skill for the Moodle AI agent stack in this repository. It covers local Moodle "
-            "reads and writes through the project CLI, seeded regression, quiz attempts, question-bank "
+            "Use this skill for the Moodle AI agent stack in this repository. It covers Moodle "
+            "reads and writes through the remote WebService CLI, seeded regression, quiz attempts, question-bank "
             "actions, calendar plans, assignments, forums, and extending `local_aiagentapi`."
         ),
         title="Moodle AI Agent CLI",
         adapter_note="This is an OpenClaw-oriented adapter for the canonical generic skill.",
-        metadata='metadata:\n  {\n    "openclaw":\n      {\n        "requires": { "bins": ["python3", "php"] }\n      }\n  }',
+        metadata='metadata:\n  {\n    "openclaw":\n      {\n        "requires": { "bins": ["python3"] }\n      }\n  }',
     ),
 ]
 
@@ -152,7 +152,7 @@ def generate_canonical_reference() -> str:
     groups = [
         (
             "Bootstrap and discovery",
-            {"context", "catalog", "schema", "whoami", "exit-codes", "agent"},
+            {"setup", "login", "status", "context", "catalog", "schema", "whoami", "exit-codes", "agent"},
         ),
         (
             "Course and activity reads",
@@ -212,6 +212,10 @@ def generate_canonical_reference() -> str:
         "--no-input",
         "--enable-commands",
         "--env-file",
+        "--profile",
+        "--base-url",
+        "--token",
+        "--service",
     ]
 
     lines = [
@@ -222,15 +226,27 @@ def generate_canonical_reference() -> str:
         "## Current architecture",
         "",
         "- Backend source of truth: `public/local/aiagentapi`",
-        "- Agent-facing CLI: `scripts/moodle_cli.py`",
+        "- Agent-facing remote WebService CLI: `scripts/moodle_cli.py`",
+        "- WebService endpoint: `<base-url>/webservice/rest/server.php`",
+        "- Moodle PHP maintenance scripts: `scripts/*.php` and `admin/cli/*.php`",
         "- Seed fixtures: `scripts/seed_moodle_test_data.php`",
         "- Live regression: `scripts/test_moodle_live_cli.py`",
+        "",
+        "## Tool boundary",
+        "",
+        "- Use `python3 scripts/moodle_cli.py ...` for normal agent operations, including online quiz creation.",
+        "- This remote CLI needs Python plus a Moodle base URL and WebService token/profile.",
+        "- The remote CLI does not need local PHP, `public/config.php`, or the Moodle server code directory.",
+        "- Use PHP scripts only for Moodle internal maintenance such as plugin upgrade, service registration, data imports, or seeding.",
+        "- PHP scripts must run in a Moodle code tree with PHP and `config.php`.",
         "",
         "## Root contract",
         "",
         "- Common flags: " + ", ".join(f"`{flag}`" for flag in root_flags),
         "- Write commands should use `--dry-run` first when supported, then rerun with `--force`.",
         "- `catalog get` and `context get` are the preferred first calls for discovery.",
+        "- First-time login should use `setup --name <profile> --base-url <url>`, then `login --name <profile>`, then `status --name <profile>`.",
+        "- In headless agent sessions, use `login --name <profile> --no-wait` and return the `verification_url` to the user.",
         "",
         "## Generated command inventory",
         "",

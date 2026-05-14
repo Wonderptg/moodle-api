@@ -7,15 +7,27 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 ## Current architecture
 
 - Backend source of truth: `public/local/aiagentapi`
-- Agent-facing CLI: `scripts/moodle_cli.py`
+- Agent-facing remote WebService CLI: `scripts/moodle_cli.py`
+- WebService endpoint: `<base-url>/webservice/rest/server.php`
+- Moodle PHP maintenance scripts: `scripts/*.php` and `admin/cli/*.php`
 - Seed fixtures: `scripts/seed_moodle_test_data.php`
 - Live regression: `scripts/test_moodle_live_cli.py`
 
+## Tool boundary
+
+- Use `python3 scripts/moodle_cli.py ...` for normal agent operations, including online quiz creation.
+- This remote CLI needs Python plus a Moodle base URL and WebService token/profile.
+- The remote CLI does not need local PHP, `public/config.php`, or the Moodle server code directory.
+- Use PHP scripts only for Moodle internal maintenance such as plugin upgrade, service registration, data imports, or seeding.
+- PHP scripts must run in a Moodle code tree with PHP and `config.php`.
+
 ## Root contract
 
-- Common flags: `--json`, `--plain`, `--results-only`, `--select`, `--dry-run`, `--force`, `--no-input`, `--enable-commands`, `--env-file`
+- Common flags: `--json`, `--plain`, `--results-only`, `--select`, `--dry-run`, `--force`, `--no-input`, `--enable-commands`, `--env-file`, `--profile`, `--base-url`, `--token`, `--service`
 - Write commands should use `--dry-run` first when supported, then rerun with `--force`.
 - `catalog get` and `context get` are the preferred first calls for discovery.
+- First-time login should use `setup --name <profile> --base-url <url>`, then `login --name <profile>`, then `status --name <profile>`.
+- In headless agent sessions, use `login --name <profile> --no-wait` and return the `verification_url` to the user.
 
 ## Generated command inventory
 
@@ -25,7 +37,10 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 - `catalog get`
 - `context get`
 - `exit-codes`
+- `login`
 - `schema`
+- `setup`
+- `status`
 - `whoami`
 
 ### Course and activity reads
@@ -114,7 +129,6 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 - `mathstate review-upsert`
 - `mathstate reviews-due`
 - `mathstate student-summary`
-- `mathstate video-progress-summary`
 - `profile add`
 - `profile list`
 - `profile remove`

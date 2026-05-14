@@ -1,6 +1,28 @@
 # Moodle CLI
 
-Agent-facing CLI wrapper for `/Users/wonder/Documents/moodle/public/local/aiagentapi`.
+Agent-facing remote WebService CLI wrapper for `local_aiagentapi`.
+
+## Read This First
+
+There are two different tool families in this repository:
+
+| Tool family | Main path | Runs where | Requires | Use for |
+| --- | --- | --- | --- | --- |
+| Remote Moodle CLI | `scripts/moodle_cli.py` / `bin/moodle` | Any machine with network access | Python, Moodle base URL, WebService token/profile | Reading courses, listing quizzes, starting attempts, creating online practice quizzes through `local_aiagentapi` |
+| Moodle PHP maintenance scripts | `scripts/*.php`, `admin/cli/*.php` | Moodle code directory | PHP, Moodle `config.php`, correct Moodle root | Plugin upgrade, service registration, data imports, one-off DB maintenance |
+
+Important: `moodle_cli.py` does **not** need local PHP, `public/config.php`, or the
+server code directory. It calls:
+
+```text
+https://dzexam.cn/webservice/rest/server.php
+  -> local_aiagentapi
+  -> Moodle server-side PHP plugin logic
+```
+
+If an agent says it cannot create an online quiz because the local environment has
+no PHP or no `public/config.php`, it is using the wrong tool family. Online quiz
+creation should use `quiz create-practice` through the remote Moodle CLI.
 
 Design goals (aligned with Feishu/Lark-style CLI ergonomics):
 
@@ -15,6 +37,7 @@ Important:
 - this CLI is a thin wrapper
 - the real backend contract remains `local_aiagentapi`
 - business logic should stay server-side
+- Moodle permissions still apply to the token user; admin tokens can create quizzes, student tokens should not
 
 ## Script path
 
@@ -46,6 +69,9 @@ Important:
 - `schema`
 - `exit-codes`
 - `doctor`
+- `setup`
+- `login`
+- `status`
 - `agent exit-codes`
 - `config list`
 - `config show`
@@ -119,16 +145,46 @@ Important:
 
 ## Quick start (new computer)
 
+### Fast path for AI agents
+
+Use these top-level aliases first. They are easier for agents to discover than
+the lower-level `config` / `auth` commands:
+
+```bash
+bin/moodle setup --name prod --base-url https://dzexam.cn
+bin/moodle login --name prod
+bin/moodle status --name prod
+bin/moodle --json context get
+```
+
+If `login` is running in a headless or background agent session, use:
+
+```bash
+bin/moodle login --name prod --no-wait
+```
+
+Then send the returned `verification_url` to the user and later resume polling:
+
+```bash
+bin/moodle login --name prod --device-code <DEVICE_CODE>
+```
+
 ### 1) Initialize local profile
 
 ```bash
-bin/moodle config init --name prod --base-url http://dzexam.cn --activate
+bin/moodle config init --name prod --base-url https://dzexam.cn --activate
 ```
 
 ### 2) Login (recommended: browser/device flow)
 
 ```bash
 bin/moodle auth login --name prod
+```
+
+Equivalent top-level alias:
+
+```bash
+bin/moodle login --name prod
 ```
 
 Non-interactive start + complete later:
@@ -149,6 +205,12 @@ bin/moodle auth login --name prod --username wonderhow --password '***'
 bin/moodle doctor
 bin/moodle --json auth status
 bin/moodle --json context get
+```
+
+Equivalent top-level alias:
+
+```bash
+bin/moodle --json status
 ```
 
 ## Output contract
