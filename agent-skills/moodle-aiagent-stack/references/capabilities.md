@@ -5,9 +5,19 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 ## Current architecture
 
 - Backend source of truth: `public/local/aiagentapi`
-- Agent-facing CLI: `scripts/moodle_cli.py`
+- Agent-facing remote WebService CLI: `scripts/moodle_cli.py`
+- WebService endpoint: `<base-url>/webservice/rest/server.php`
+- Moodle PHP maintenance scripts: `scripts/*.php` and `admin/cli/*.php`
 - Seed fixtures: `scripts/seed_moodle_test_data.php`
 - Live regression: `scripts/test_moodle_live_cli.py`
+
+## Tool boundary
+
+- Use `python3 scripts/moodle_cli.py ...` for normal agent operations, including online quiz creation.
+- This remote CLI needs Python plus a Moodle base URL and WebService token/profile.
+- The remote CLI does not need local PHP, `public/config.php`, or the Moodle server code directory.
+- Use PHP scripts only for Moodle internal maintenance such as plugin upgrade, service registration, data imports, or seeding.
+- PHP scripts must run in a Moodle code tree with PHP and `config.php`.
 
 ## Root contract
 
@@ -75,6 +85,7 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 - `quiz attempt-data`
 - `quiz attempt-summary`
 - `quiz attempts`
+- `quiz create-practice`
 - `quiz list`
 - `quiz resolve-random`
 - `quiz save-attempt`

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Agent-friendly Moodle CLI wrapper for local_aiagentapi.
+Agent-friendly remote Moodle WebService CLI wrapper for local_aiagentapi.
+
+This script is a Python client for /webservice/rest/server.php. It does not
+load Moodle config.php and does not need to run from a Moodle server checkout.
+PHP scripts in scripts/*.php are the separate Moodle maintenance path.
 
 Design goals:
 - strong root contract
@@ -3393,9 +3397,30 @@ def add_connection_flags(parser: argparse.ArgumentParser, *, include_token: bool
 
 
 def build_parser() -> argparse.ArgumentParser:
+    epilog = """
+Execution model:
+  moodle_cli.py is a remote WebService client. It calls:
+    <base-url>/webservice/rest/server.php -> local_aiagentapi
+
+  It requires Python plus a Moodle base URL and web-service token/profile.
+  It does not require local PHP, public/config.php, or running from the Moodle
+  server code directory.
+
+  PHP scripts in scripts/*.php are different: they are Moodle maintenance
+  scripts and must run inside a Moodle code tree with PHP and config.php.
+
+Common paths:
+  Remote online quiz creation:
+    moodle --profile dzexam --json quiz create-practice ...
+
+  Moodle internal maintenance:
+    cd /srv/moodle/current && php scripts/register_aiagentapi_service_functions.php
+"""
     parser = argparse.ArgumentParser(
         prog="moodle",
-        description="Agent-friendly Moodle CLI over local_aiagentapi.",
+        description="Agent-friendly remote Moodle WebService CLI over local_aiagentapi.",
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser._aliases = []  # type: ignore[attr-defined]
     parser._command_name = "moodle"  # type: ignore[attr-defined]
@@ -3601,7 +3626,11 @@ def build_parser() -> argparse.ArgumentParser:
     quiz_list = add_parser(quiz_sub, "list", description="List quizzes in a course", aliases=["ls"])
     quiz_list.add_argument("--course-id", type=int, required=True, help="Course id")
     quiz_list.set_defaults(handler=command_quiz_list, command_path=["quiz", "list"])
-    quiz_create_practice = add_parser(quiz_sub, "create-practice", description="Create a post-lesson practice quiz from existing mapped questions")
+    quiz_create_practice = add_parser(
+        quiz_sub,
+        "create-practice",
+        description="Create an online Moodle practice quiz through local_aiagentapi WebService from existing mapped questions",
+    )
     quiz_create_practice.add_argument("--idempotency-key", required=True, help="Client idempotency key")
     quiz_create_practice.add_argument("--course-id", type=int, required=True, help="Target course id")
     quiz_create_practice.add_argument("--cmid", type=int, default=0, help="Optional lesson/resource cmid")
