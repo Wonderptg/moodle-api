@@ -1,0 +1,8 @@
+{
+  "name": "moodle-aiagent-stack",
+  "description": "Skill bundle for the local Moodle AI agent stack in this repository. Use for Moodle student workflows, quiz attempts, question-bank operations, calendar planning, local regression, and extending local_aiagentapi through the remote WebService CLI.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Wonder"
+  }
+}
