@@ -1,0 +1,15 @@
+{
+  "name": "moodle-aiagent-stack",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenClaw tool surface for the local Moodle local_aiagentapi stack.",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.4.25"
+    }
+  }
+}
