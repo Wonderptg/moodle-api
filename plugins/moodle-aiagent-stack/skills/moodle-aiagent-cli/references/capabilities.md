@@ -81,6 +81,8 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 - `questions pick-random`
 - `questions render-html`
 - `questions search`
+- `questions tags`
+- `questions tags-sync`
 
 ### Quiz lifecycle
 

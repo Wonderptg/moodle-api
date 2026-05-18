@@ -25,7 +25,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_aiagentapi';
-$plugin->version = 2026051800;
+$plugin->version = 2026051801;
 $plugin->requires = 2025100600.00; // Moodle 5.1.
 $plugin->maturity = MATURITY_ALPHA;
-$plugin->release = '0.3.1';
+$plugin->release = '0.3.2';

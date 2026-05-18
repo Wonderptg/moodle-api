@@ -113,5 +113,26 @@ function xmldb_local_aiagentapi_upgrade(int $oldversion): bool {
         upgrade_plugin_savepoint(true, 2026051400, 'local', 'aiagentapi');
     }
 
+    // 2026051801: add a small rebuildable question tag index for AI/CLI lookups.
+    if ($oldversion < 2026051801) {
+        $table = new xmldb_table('local_aiagentapi_qtagidx');
+
+        $table->add_field('courseid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('categoryid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('tagid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('tagname', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('question_count', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+
+        $table->add_key('primary', XMLDB_KEY_PRIMARY, ['courseid', 'categoryid', 'tagid']);
+        $table->add_index('idx_course_category', XMLDB_INDEX_NOTUNIQUE, ['courseid', 'categoryid']);
+        $table->add_index('idx_tagname', XMLDB_INDEX_NOTUNIQUE, ['tagname']);
+
+        if (!$dbman->table_exists($table)) {
+            $dbman->create_table($table);
+        }
+
+        upgrade_plugin_savepoint(true, 2026051801, 'local', 'aiagentapi');
+    }
+
     return true;
 }

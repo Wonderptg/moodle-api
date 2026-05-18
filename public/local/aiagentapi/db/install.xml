@@ -69,5 +69,22 @@
         <INDEX NAME="idx_status_exp" UNIQUE="false" FIELDS="status,expiresat"/>
       </INDEXES>
     </TABLE>
+
+    <TABLE NAME="local_aiagentapi_qtagidx" COMMENT="Question tag index by course and question category">
+      <FIELDS>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="categoryid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="tagid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="tagname" TYPE="char" LENGTH="255" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="question_count" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" DEFAULT="0"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="courseid,categoryid,tagid"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="idx_course_category" UNIQUE="false" FIELDS="courseid,categoryid"/>
+        <INDEX NAME="idx_tagname" UNIQUE="false" FIELDS="tagname"/>
+      </INDEXES>
+    </TABLE>
   </TABLES>
 </XMLDB>

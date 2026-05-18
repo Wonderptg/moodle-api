@@ -225,6 +225,22 @@ $functions = [
         'type' => 'read',
         'capabilities' => 'local/aiagentapi:use, moodle/question:useall',
     ],
+    'local_aiagentapi_question_tags_list' => [
+        'classname' => 'local_aiagentapi_external',
+        'methodname' => 'question_tags_list',
+        'classpath' => 'local/aiagentapi/externallib.php',
+        'description' => 'List indexed Moodle question tags by course/category.',
+        'type' => 'read',
+        'capabilities' => 'local/aiagentapi:use, moodle/question:useall',
+    ],
+    'local_aiagentapi_question_tags_sync' => [
+        'classname' => 'local_aiagentapi_external',
+        'methodname' => 'question_tags_sync',
+        'classpath' => 'local/aiagentapi/externallib.php',
+        'description' => 'Rebuild indexed Moodle question tags by course/category.',
+        'type' => 'write',
+        'capabilities' => 'local/aiagentapi:use, moodle/question:useall',
+    ],
     'local_aiagentapi_questionbank_pick_random' => [
         'classname' => 'local_aiagentapi_external',
         'methodname' => 'questionbank_pick_random',

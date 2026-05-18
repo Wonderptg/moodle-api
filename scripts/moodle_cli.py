@@ -1690,11 +1690,39 @@ def transform_questions_search_result(value: Any) -> Any:
     if not isinstance(raw_data, dict):
         return value
     questions = [normalize_question_item(item) for item in list(raw_data.get("questions") or [])]
+    page = raw_data.get("page") if isinstance(raw_data.get("page"), dict) else {}
     return build_cli_envelope(
         ok=bool(value.get("ok", True)),
         identity="user",
-        data=with_items_alias({"questions": questions}, "questions"),
-        meta={"count": len(questions), "primary_resource": "questions"},
+        data=with_items_alias({"questions": questions, "page": page}, "questions"),
+        meta={"count": len(questions), "primary_resource": "questions", "page": page},
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_question_tags_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    tags = list(raw_data.get("tags") or [])
+    page = raw_data.get("page") if isinstance(raw_data.get("page"), dict) else {}
+    meta = {"count": len(tags), "primary_resource": "question_tags"}
+    if page:
+        meta["page"] = page
+    if "synced_count" in raw_data:
+        meta["synced_count"] = safe_int(raw_data.get("synced_count"))
+    data = {"tags": tags}
+    if page:
+        data["page"] = page
+    if "synced_count" in raw_data:
+        data["synced_count"] = safe_int(raw_data.get("synced_count"))
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias(data, "tags"),
+        meta=meta,
         error=value.get("error") if isinstance(value.get("error"), dict) else None,
     )
 
@@ -1789,6 +1817,8 @@ def transform_extended_command_output(value: Any, args: argparse.Namespace) -> A
         return transform_notifications_list_result(value)
     if command_path_equals(args, ["questions", "search"]):
         return transform_questions_search_result(value)
+    if command_path_equals(args, ["questions", "tags"]) or command_path_equals(args, ["questions", "tags-sync"]):
+        return transform_question_tags_result(value)
     if command_path_equals(args, ["activities", "detail"]):
         return transform_activities_detail_result(value)
     if command_path_equals(args, ["quiz", "attempts"]):
@@ -2315,7 +2345,27 @@ def command_questions_search(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
         "categoryid": args.category_id,
         "recurse": args.recurse,
         "qtypes": args.qtype or [],
+        "tagids": args.tag_id or [],
         "limit": args.limit,
+        "offset": args.offset,
+    })
+
+
+def command_questions_tags(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_aiagentapi_question_tags_list", {
+        "courseid": args.course_id,
+        "categoryid": args.category_id,
+        "query": args.query,
+        "limit": args.limit,
+        "offset": args.offset,
+    })
+
+
+def command_questions_tags_sync(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_aiagentapi_question_tags_sync", {
+        "courseid": args.course_id,
+        "categoryid": args.category_id,
+        "recurse": args.recurse,
     })
 
 
@@ -2371,6 +2421,7 @@ def command_quiz_create_practice(cli: "MoodleCLI", args: argparse.Namespace) -> 
         "kg_ids": args.kg_id or [],
         "qg_ids": args.qg_id or [],
         "tags": args.tag or [],
+        "tagids": args.tag_id or [],
         "seed": args.seed,
         "allow_partial": args.allow_partial,
         "selection_mode": "random_category" if args.random else args.selection_mode,
@@ -3654,8 +3705,22 @@ Common paths:
     search.add_argument("--category-id", type=int, default=0, help="Optional category id")
     search.add_argument("--recurse", action="store_true", help="Include subcategories when category is set")
     search.add_argument("--qtype", action="append", default=[], help="Question type to include (repeatable)")
+    search.add_argument("--tag-id", type=int, action="append", default=[], help="Moodle question tag id to require (repeatable)")
     search.add_argument("--limit", type=int, default=50, help="Maximum rows to return")
+    search.add_argument("--offset", type=int, default=0, help="Pagination offset")
     search.set_defaults(handler=command_questions_search, command_path=["questions", "search"])
+    tags = add_parser(questions_sub, "tags", description="List indexed Moodle question tags")
+    tags.add_argument("--course-id", type=int, required=True, help="Course id")
+    tags.add_argument("--category-id", type=int, default=0, help="Optional question category id")
+    tags.add_argument("--query", default="", help="Optional tag name search")
+    tags.add_argument("--limit", type=int, default=50, help="Maximum rows to return")
+    tags.add_argument("--offset", type=int, default=0, help="Pagination offset")
+    tags.set_defaults(handler=command_questions_tags, command_path=["questions", "tags"])
+    tags_sync = add_parser(questions_sub, "tags-sync", description="Rebuild indexed Moodle question tags")
+    tags_sync.add_argument("--course-id", type=int, required=True, help="Course id")
+    tags_sync.add_argument("--category-id", type=int, default=0, help="Optional question category id")
+    tags_sync.add_argument("--recurse", action="store_true", help="Include subcategories when category is set")
+    tags_sync.set_defaults(handler=command_questions_tags_sync, command_path=["questions", "tags-sync"])
     pick_random = add_parser(questions_sub, "pick-random", description="Pick random questions from a category", aliases=["pick"])
     pick_random.add_argument("--category-id", type=int, required=True, help="Question category id")
     pick_random.add_argument("--count", type=int, required=True, help="Number of questions to pick")
@@ -3712,6 +3777,7 @@ Typical mixed-category example:
     quiz_create_practice.add_argument("--kg-id", action="append", default=[], help="Additional KG id (repeatable)")
     quiz_create_practice.add_argument("--qg-id", action="append", default=[], help="Additional QG id (repeatable)")
     quiz_create_practice.add_argument("--tag", action="append", default=[], help="Teaching tag filter, e.g. large chapter '第一章' plus small section '1.3' (repeatable)")
+    quiz_create_practice.add_argument("--tag-id", type=int, action="append", default=[], help="Moodle question tag id to require (repeatable)")
     quiz_create_practice.add_argument("--seed", type=int, default=0, help="Optional random seed")
     quiz_create_practice.add_argument("--allow-partial", action="store_true", help="Create with fewer than count questions when necessary")
     quiz_create_practice.add_argument("--selection-mode", choices=["fixed", "random_category"], default="fixed", help="Question selection mode")

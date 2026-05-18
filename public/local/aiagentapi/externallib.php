@@ -94,6 +94,39 @@ class local_aiagentapi_external extends external_api {
     }
 
     /**
+     * Resolve question category ids that belong to a course question-bank scope.
+     *
+     * @param \stdClass $course
+     * @param int $categoryid
+     * @param bool $recurse
+     * @return array<int>
+     */
+    private static function course_question_category_ids(\stdClass $course, int $categoryid = 0, bool $recurse = false): array {
+        global $DB;
+
+        $contextids = self::course_question_context_ids($course);
+        if (empty($contextids)) {
+            return [];
+        }
+
+        if ($categoryid > 0) {
+            $category = $DB->get_record('question_categories', ['id' => $categoryid], '*', MUST_EXIST);
+            $categoryids = $recurse ? question_categorylist((int)$category->id) : [(int)$category->id];
+            return array_values(array_unique(array_filter(array_map('intval', $categoryids), static function(int $value): bool {
+                return $value > 0;
+            })));
+        }
+
+        [$contextsql, $contextparams] = $DB->get_in_or_equal($contextids, SQL_PARAMS_NAMED, 'qcatctx');
+        return array_values(array_map('intval', $DB->get_fieldset_select(
+            'question_categories',
+            'id',
+            "contextid $contextsql",
+            $contextparams
+        )));
+    }
+
+    /**
      * Return true when a database table exists.
      *
      * @param string $tablename
@@ -1763,16 +1796,107 @@ class local_aiagentapi_external extends external_api {
                         'description' => 'Question types to include.',
                     ],
                     [
+                        'name' => 'tagids',
+                        'type' => 'array',
+                        'required' => false,
+                        'description' => 'Moodle question tag ids to require.',
+                    ],
+                    [
                         'name' => 'limit',
                         'type' => 'int',
                         'required' => false,
                         'description' => 'Maximum rows to return.',
                     ],
+                    [
+                        'name' => 'offset',
+                        'type' => 'int',
+                        'required' => false,
+                        'description' => 'Pagination offset.',
+                    ],
                 ],
                 'data_fields' => [
                     'questions[]',
+                    'page',
                 ],
                 'notes' => 'Searches latest ready versions only.',
+            ],
+            [
+                'name' => 'local_aiagentapi_question_tags_list',
+                'description' => 'List indexed Moodle question tags by course/category.',
+                'type' => 'read',
+                'capabilities' => [
+                    'local/aiagentapi:use',
+                    'moodle/question:useall',
+                ],
+                'idempotent' => true,
+                'supports_dry_run' => false,
+                'params' => [
+                    [
+                        'name' => 'courseid',
+                        'type' => 'int',
+                        'required' => true,
+                        'description' => 'Course id.',
+                    ],
+                    [
+                        'name' => 'categoryid',
+                        'type' => 'int',
+                        'required' => false,
+                        'description' => 'Optional question category id.',
+                    ],
+                    [
+                        'name' => 'query',
+                        'type' => 'string',
+                        'required' => false,
+                        'description' => 'Optional tag name search.',
+                    ],
+                    [
+                        'name' => 'limit',
+                        'type' => 'int',
+                        'required' => false,
+                        'description' => 'Maximum rows to return.',
+                    ],
+                    [
+                        'name' => 'offset',
+                        'type' => 'int',
+                        'required' => false,
+                        'description' => 'Pagination offset.',
+                    ],
+                ],
+                'data_fields' => ['tags[]', 'page'],
+                'notes' => 'Reads local_aiagentapi_qtagidx; run question_tags_sync after Moodle tag changes.',
+            ],
+            [
+                'name' => 'local_aiagentapi_question_tags_sync',
+                'description' => 'Rebuild indexed Moodle question tags by course/category.',
+                'type' => 'write',
+                'capabilities' => [
+                    'local/aiagentapi:use',
+                    'moodle/question:useall',
+                ],
+                'idempotent' => true,
+                'supports_dry_run' => false,
+                'params' => [
+                    [
+                        'name' => 'courseid',
+                        'type' => 'int',
+                        'required' => true,
+                        'description' => 'Course id.',
+                    ],
+                    [
+                        'name' => 'categoryid',
+                        'type' => 'int',
+                        'required' => false,
+                        'description' => 'Optional question category id.',
+                    ],
+                    [
+                        'name' => 'recurse',
+                        'type' => 'bool',
+                        'required' => false,
+                        'description' => 'Include subcategories when categoryid is set.',
+                    ],
+                ],
+                'data_fields' => ['tags[]', 'synced_count'],
+                'notes' => 'Rebuilds the small five-field tag index from Moodle native tag/question tables.',
             ],
             [
                 'name' => 'local_aiagentapi_questionbank_pick_random',
@@ -1929,6 +2053,7 @@ class local_aiagentapi_external extends external_api {
                     ['name' => 'kg_ids', 'type' => 'array', 'required' => false, 'description' => 'Additional KG ids.'],
                     ['name' => 'qg_ids', 'type' => 'array', 'required' => false, 'description' => 'Additional QG ids.'],
                     ['name' => 'tags', 'type' => 'array', 'required' => false, 'description' => 'Teaching tag filters. Explicit tags are matched against Moodle question tags and title/text.'],
+                    ['name' => 'tagids', 'type' => 'array', 'required' => false, 'description' => 'Moodle question tag ids to require.'],
                     ['name' => 'seed', 'type' => 'int', 'required' => false, 'description' => 'Optional random seed.'],
                     ['name' => 'allow_partial', 'type' => 'bool', 'required' => false, 'description' => 'Create with fewer than count questions when necessary.'],
                     ['name' => 'selection_mode', 'type' => 'string', 'required' => false, 'description' => 'fixed or random_category.'],
@@ -4617,6 +4742,335 @@ class local_aiagentapi_external extends external_api {
     }
 
     /**
+     * Parameters for question_tags_sync.
+     *
+     * @return external_function_parameters
+     */
+    public static function question_tags_sync_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'courseid' => new external_value(PARAM_INT, 'Course id', VALUE_REQUIRED),
+            'categoryid' => new external_value(PARAM_INT, 'Optional question category id', VALUE_DEFAULT, 0),
+            'recurse' => new external_value(PARAM_BOOL, 'Include subcategories when categoryid is set', VALUE_DEFAULT, false),
+        ]);
+    }
+
+    /**
+     * Rebuild the small question tag index for a course or category.
+     *
+     * @param int $courseid
+     * @param int $categoryid
+     * @param bool $recurse
+     * @return array
+     */
+    public static function question_tags_sync(int $courseid, int $categoryid = 0, bool $recurse = false): array {
+        global $DB, $USER;
+
+        $params = self::validate_parameters(self::question_tags_sync_parameters(), [
+            'courseid' => $courseid,
+            'categoryid' => $categoryid,
+            'recurse' => $recurse,
+        ]);
+
+        self::restricted_context();
+        $auditid = self::uuid_v4();
+
+        try {
+            if (!self::table_exists('local_aiagentapi_qtagidx')) {
+                throw new \moodle_exception('Question tag index table is missing. Run Moodle upgrade first.');
+            }
+
+            $course = $DB->get_record('course', ['id' => (int)$params['courseid']], '*', MUST_EXIST);
+            $coursecontext = \context_course::instance((int)$course->id, MUST_EXIST);
+            self::validate_context($coursecontext);
+            require_capability('moodle/course:view', $coursecontext);
+            require_capability('moodle/question:useall', $coursecontext);
+
+            $categoryids = self::course_question_category_ids($course, (int)$params['categoryid'], (bool)$params['recurse']);
+            if (empty($categoryids)) {
+                $response = self::response_ok($auditid, [
+                    'courseid' => (int)$course->id,
+                    'categoryid' => (int)$params['categoryid'],
+                    'tags' => [],
+                    'synced_count' => 0,
+                ]);
+                self::audit($USER->id, 'question_tags_sync', true, $auditid, $params, $response);
+                return $response;
+            }
+
+            [$delcatsql, $delcatparams] = $DB->get_in_or_equal($categoryids, SQL_PARAMS_NAMED, 'delcat');
+            $DB->delete_records_select(
+                'local_aiagentapi_qtagidx',
+                "courseid = :delcourseid AND categoryid $delcatsql",
+                array_merge(['delcourseid' => (int)$course->id], $delcatparams)
+            );
+
+            [$catsql, $catparams] = $DB->get_in_or_equal($categoryids, SQL_PARAMS_NAMED, 'tagcat');
+            $sql = "SELECT qbe.questioncategoryid AS categoryid,
+                           t.id AS tagid,
+                           t.name,
+                           t.rawname,
+                           COUNT(DISTINCT q.id) AS question_count
+                      FROM {tag} t
+                      JOIN {tag_instance} ti ON ti.tagid = t.id
+                      JOIN {question} q ON q.id = ti.itemid
+                      JOIN {question_versions} qv ON qv.questionid = q.id
+                      JOIN {question_bank_entries} qbe ON qbe.id = qv.questionbankentryid
+                     WHERE ti.component = :tagcomponent
+                       AND ti.itemtype = :tagitemtype
+                       AND q.parent = 0
+                       AND qv.status = 'ready'
+                       AND qbe.questioncategoryid $catsql
+                       AND NOT EXISTS (
+                           SELECT 1
+                             FROM {question_versions} qv2
+                            WHERE qv2.questionbankentryid = qv.questionbankentryid
+                              AND qv.version < qv2.version
+                       )
+                  GROUP BY qbe.questioncategoryid, t.id, t.name, t.rawname
+                  ORDER BY qbe.questioncategoryid ASC, question_count DESC, t.rawname ASC, t.name ASC";
+            $recordset = $DB->get_recordset_sql($sql, array_merge([
+                'tagcomponent' => 'core_question',
+                'tagitemtype' => 'question',
+            ], $catparams));
+
+            $tags = [];
+            foreach ($recordset as $record) {
+                $tagname = trim((string)($record->rawname ?? ''));
+                if ($tagname === '') {
+                    $tagname = trim((string)($record->name ?? ''));
+                }
+                $tagname = core_text::substr($tagname, 0, 255);
+                $row = (object)[
+                    'courseid' => (int)$course->id,
+                    'categoryid' => (int)$record->categoryid,
+                    'tagid' => (int)$record->tagid,
+                    'tagname' => $tagname,
+                    'question_count' => (int)$record->question_count,
+                ];
+                $DB->execute(
+                    "INSERT INTO {local_aiagentapi_qtagidx}
+                        (courseid, categoryid, tagid, tagname, question_count)
+                     VALUES (:courseid, :categoryid, :tagid, :tagname, :questioncount)",
+                    [
+                        'courseid' => (int)$row->courseid,
+                        'categoryid' => (int)$row->categoryid,
+                        'tagid' => (int)$row->tagid,
+                        'tagname' => (string)$row->tagname,
+                        'questioncount' => (int)$row->question_count,
+                    ]
+                );
+                $tags[] = [
+                    'courseid' => (int)$row->courseid,
+                    'categoryid' => (int)$row->categoryid,
+                    'tagid' => (int)$row->tagid,
+                    'tagname' => (string)$row->tagname,
+                    'question_count' => (int)$row->question_count,
+                ];
+            }
+            $recordset->close();
+
+            $response = self::response_ok($auditid, [
+                'courseid' => (int)$course->id,
+                'categoryid' => (int)$params['categoryid'],
+                'tags' => $tags,
+                'synced_count' => count($tags),
+            ]);
+            self::audit($USER->id, 'question_tags_sync', true, $auditid, $params, $response);
+            return $response;
+        } catch (\Throwable $e) {
+            $response = self::response_error($auditid, 'question_tags_sync_failed', $e->getMessage(), false, false, [
+                'courseid' => (int)$params['courseid'],
+                'categoryid' => (int)$params['categoryid'],
+                'tags' => [],
+                'synced_count' => 0,
+            ]);
+            self::audit($USER->id, 'question_tags_sync', false, $auditid, $params, $response);
+            return $response;
+        }
+    }
+
+    /**
+     * Returns for question_tags_sync.
+     *
+     * @return \core_external\external_description
+     */
+    public static function question_tags_sync_returns(): \core_external\external_description {
+        return self::envelope_returns(
+            new external_single_structure([
+                'courseid' => new external_value(PARAM_INT, 'Course id'),
+                'categoryid' => new external_value(PARAM_INT, 'Requested category id'),
+                'tags' => new external_multiple_structure(self::question_tag_index_item_returns()),
+                'synced_count' => new external_value(PARAM_INT, 'Number of index rows synced'),
+            ])
+        );
+    }
+
+    /**
+     * Shared return shape for question tag index rows.
+     *
+     * @return external_single_structure
+     */
+    private static function question_tag_index_item_returns(): external_single_structure {
+        return new external_single_structure([
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'categoryid' => new external_value(PARAM_INT, 'Question category id'),
+            'tagid' => new external_value(PARAM_INT, 'Moodle tag id'),
+            'tagname' => new external_value(PARAM_RAW, 'Moodle tag display name'),
+            'question_count' => new external_value(PARAM_INT, 'Ready latest questions using this tag'),
+        ]);
+    }
+
+    /**
+     * Parameters for question_tags_list.
+     *
+     * @return external_function_parameters
+     */
+    public static function question_tags_list_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'courseid' => new external_value(PARAM_INT, 'Course id', VALUE_REQUIRED),
+            'categoryid' => new external_value(PARAM_INT, 'Optional question category id', VALUE_DEFAULT, 0),
+            'query' => new external_value(PARAM_TEXT, 'Optional tag name search', VALUE_DEFAULT, ''),
+            'limit' => new external_value(PARAM_INT, 'Maximum rows to return', VALUE_DEFAULT, 50),
+            'offset' => new external_value(PARAM_INT, 'Pagination offset', VALUE_DEFAULT, 0),
+        ]);
+    }
+
+    /**
+     * List indexed Moodle question tags for a course/category.
+     *
+     * @param int $courseid
+     * @param int $categoryid
+     * @param string $query
+     * @param int $limit
+     * @param int $offset
+     * @return array
+     */
+    public static function question_tags_list(
+        int $courseid,
+        int $categoryid = 0,
+        string $query = '',
+        int $limit = 50,
+        int $offset = 0
+    ): array {
+        global $DB, $USER;
+
+        $params = self::validate_parameters(self::question_tags_list_parameters(), [
+            'courseid' => $courseid,
+            'categoryid' => $categoryid,
+            'query' => $query,
+            'limit' => $limit,
+            'offset' => $offset,
+        ]);
+
+        self::restricted_context();
+        $auditid = self::uuid_v4();
+
+        try {
+            if (!self::table_exists('local_aiagentapi_qtagidx')) {
+                throw new \moodle_exception('Question tag index table is missing. Run Moodle upgrade first.');
+            }
+
+            $course = $DB->get_record('course', ['id' => (int)$params['courseid']], '*', MUST_EXIST);
+            $coursecontext = \context_course::instance((int)$course->id, MUST_EXIST);
+            self::validate_context($coursecontext);
+            require_capability('moodle/course:view', $coursecontext);
+            require_capability('moodle/question:useall', $coursecontext);
+
+            $limitnum = (int)$params['limit'];
+            if ($limitnum < 1 || $limitnum > 200) {
+                throw new \invalid_parameter_exception('limit must be between 1 and 200.');
+            }
+            $offsetnum = (int)$params['offset'];
+            if ($offsetnum < 0) {
+                throw new \invalid_parameter_exception('offset must be zero or greater.');
+            }
+
+            $where = ['courseid = :courseid'];
+            $sqlparams = ['courseid' => (int)$course->id];
+            if (!empty($params['categoryid'])) {
+                $where[] = 'categoryid = :categoryid';
+                $sqlparams['categoryid'] = (int)$params['categoryid'];
+            }
+            $querytext = trim((string)$params['query']);
+            if ($querytext !== '') {
+                $where[] = $DB->sql_like('tagname', ':query', false, false);
+                $sqlparams['query'] = '%' . $querytext . '%';
+            }
+
+            $sql = "SELECT courseid, categoryid, tagid, tagname, question_count
+                      FROM {local_aiagentapi_qtagidx}
+                     WHERE " . implode(' AND ', $where) . "
+                  ORDER BY question_count DESC, tagname ASC, categoryid ASC, tagid ASC";
+            $recordset = $DB->get_recordset_sql($sql, $sqlparams, $offsetnum, $limitnum + 1);
+            $tags = [];
+            $hasmore = false;
+            foreach ($recordset as $record) {
+                if (count($tags) >= $limitnum) {
+                    $hasmore = true;
+                    break;
+                }
+                $tags[] = [
+                    'courseid' => (int)$record->courseid,
+                    'categoryid' => (int)$record->categoryid,
+                    'tagid' => (int)$record->tagid,
+                    'tagname' => (string)$record->tagname,
+                    'question_count' => (int)$record->question_count,
+                ];
+            }
+            $recordset->close();
+
+            $response = self::response_ok($auditid, [
+                'courseid' => (int)$course->id,
+                'categoryid' => (int)$params['categoryid'],
+                'tags' => $tags,
+                'page' => [
+                    'limit' => $limitnum,
+                    'offset' => $offsetnum,
+                    'next_offset' => $hasmore ? $offsetnum + $limitnum : -1,
+                    'has_more' => $hasmore,
+                ],
+            ]);
+            self::audit($USER->id, 'question_tags_list', true, $auditid, $params, $response);
+            return $response;
+        } catch (\Throwable $e) {
+            $response = self::response_error($auditid, 'question_tags_list_failed', $e->getMessage(), false, false, [
+                'courseid' => (int)$params['courseid'],
+                'categoryid' => (int)$params['categoryid'],
+                'tags' => [],
+                'page' => [
+                    'limit' => (int)$params['limit'],
+                    'offset' => (int)$params['offset'],
+                    'next_offset' => -1,
+                    'has_more' => false,
+                ],
+            ]);
+            self::audit($USER->id, 'question_tags_list', false, $auditid, $params, $response);
+            return $response;
+        }
+    }
+
+    /**
+     * Returns for question_tags_list.
+     *
+     * @return \core_external\external_description
+     */
+    public static function question_tags_list_returns(): \core_external\external_description {
+        return self::envelope_returns(
+            new external_single_structure([
+                'courseid' => new external_value(PARAM_INT, 'Course id'),
+                'categoryid' => new external_value(PARAM_INT, 'Requested category id'),
+                'tags' => new external_multiple_structure(self::question_tag_index_item_returns()),
+                'page' => new external_single_structure([
+                    'limit' => new external_value(PARAM_INT, 'Page size'),
+                    'offset' => new external_value(PARAM_INT, 'Current offset'),
+                    'next_offset' => new external_value(PARAM_INT, 'Next offset, or -1'),
+                    'has_more' => new external_value(PARAM_BOOL, 'Whether another page exists'),
+                ]),
+            ])
+        );
+    }
+
+    /**
      * Parameters for questionbank_search.
      *
      * @return external_function_parameters
@@ -4633,7 +5087,14 @@ class local_aiagentapi_external extends external_api {
                 VALUE_DEFAULT,
                 []
             ),
+            'tagids' => new external_multiple_structure(
+                new external_value(PARAM_INT, 'Moodle question tag id'),
+                'Moodle question tag ids to require',
+                VALUE_DEFAULT,
+                []
+            ),
             'limit' => new external_value(PARAM_INT, 'Maximum rows to return', VALUE_DEFAULT, 50),
+            'offset' => new external_value(PARAM_INT, 'Pagination offset', VALUE_DEFAULT, 0),
         ]);
     }
 
@@ -4645,16 +5106,20 @@ class local_aiagentapi_external extends external_api {
      * @param int $categoryid
      * @param bool $recurse
      * @param array $qtypes
+     * @param array $tagids
      * @param int $limit
+     * @param int $offset
      * @return array
      */
     public static function questionbank_search(
-        string $query,
-        int $courseid,
-        int $categoryid,
-        bool $recurse,
-        array $qtypes,
-        int $limit
+        string $query = '',
+        int $courseid = 0,
+        int $categoryid = 0,
+        bool $recurse = false,
+        array $qtypes = [],
+        array $tagids = [],
+        int $limit = 50,
+        int $offset = 0
     ): array {
         global $DB, $USER;
 
@@ -4665,19 +5130,21 @@ class local_aiagentapi_external extends external_api {
             'recurse' => $recurse,
             'qtypes' => $qtypes,
             'limit' => $limit,
+            'tagids' => $tagids,
+            'offset' => $offset,
         ]);
 
         self::restricted_context();
         $auditid = self::uuid_v4();
 
         try {
-            if (!empty($params['courseid']) && !empty($params['categoryid'])) {
-                throw new \invalid_parameter_exception('Use either courseid or categoryid, not both.');
-            }
-
             $limitnum = (int)$params['limit'];
             if ($limitnum < 1 || $limitnum > 200) {
                 throw new \invalid_parameter_exception('Limit must be between 1 and 200.');
+            }
+            $offsetnum = (int)$params['offset'];
+            if ($offsetnum < 0) {
+                throw new \invalid_parameter_exception('Offset must be zero or greater.');
             }
 
             $categoryids = [];
@@ -4741,8 +5208,32 @@ class local_aiagentapi_external extends external_api {
                 $sqlparams = array_merge($sqlparams, $qtparams);
             }
 
+            $tagids = array_values(array_unique(array_filter(array_map('intval', (array)$params['tagids']), static function(int $value): bool {
+                return $value > 0;
+            })));
+            if (!empty($tagids)) {
+                [$tagidsql, $tagidparams] = $DB->get_in_or_equal($tagids, SQL_PARAMS_QM);
+                $where[] = "q.id IN (
+                    SELECT ti.itemid
+                      FROM {tag_instance} ti
+                     WHERE ti.component = ?
+                       AND ti.itemtype = ?
+                       AND ti.tagid $tagidsql
+                  GROUP BY ti.itemid
+                    HAVING COUNT(DISTINCT ti.tagid) = ?
+                )";
+                $sqlparams[] = 'core_question';
+                $sqlparams[] = 'question';
+                $sqlparams = array_merge($sqlparams, $tagidparams);
+                $sqlparams[] = count($tagids);
+            }
+
             $sql .= ' WHERE (' . implode(') AND (', $where) . ') ORDER BY q.timemodified DESC, q.id DESC';
-            $records = $DB->get_records_sql($sql, $sqlparams, 0, $limitnum);
+            $records = array_values($DB->get_records_sql($sql, $sqlparams, $offsetnum, $limitnum + 1));
+            $hasmore = count($records) > $limitnum;
+            if ($hasmore) {
+                $records = array_slice($records, 0, $limitnum);
+            }
 
             $payload = [];
             foreach ($records as $record) {
@@ -4758,11 +5249,27 @@ class local_aiagentapi_external extends external_api {
                 ];
             }
 
-            $response = self::response_ok($auditid, ['questions' => $payload]);
+            $response = self::response_ok($auditid, [
+                'questions' => $payload,
+                'page' => [
+                    'limit' => $limitnum,
+                    'offset' => $offsetnum,
+                    'next_offset' => $hasmore ? $offsetnum + $limitnum : -1,
+                    'has_more' => $hasmore,
+                ],
+            ]);
             self::audit($USER->id, 'questionbank_search', true, $auditid, $params, $response);
             return $response;
         } catch (\Throwable $e) {
-            $response = self::response_error($auditid, 'questionbank_search_failed', $e->getMessage());
+            $response = self::response_error($auditid, 'questionbank_search_failed', $e->getMessage(), false, false, [
+                'questions' => [],
+                'page' => [
+                    'limit' => (int)($params['limit'] ?? 50),
+                    'offset' => (int)($params['offset'] ?? 0),
+                    'next_offset' => -1,
+                    'has_more' => false,
+                ],
+            ]);
             self::audit($USER->id, 'questionbank_search', false, $auditid, $params, $response);
             return $response;
         }
@@ -4788,6 +5295,12 @@ class local_aiagentapi_external extends external_api {
                         'timemodified' => new external_value(PARAM_INT, 'Modified time'),
                     ])
                 ),
+                'page' => new external_single_structure([
+                    'limit' => new external_value(PARAM_INT, 'Page size'),
+                    'offset' => new external_value(PARAM_INT, 'Current offset'),
+                    'next_offset' => new external_value(PARAM_INT, 'Next offset, or -1'),
+                    'has_more' => new external_value(PARAM_BOOL, 'Whether another page exists'),
+                ], 'Pagination metadata', VALUE_OPTIONAL),
             ])
         );
     }
@@ -5630,6 +6143,7 @@ class local_aiagentapi_external extends external_api {
         $questiontagids = array_values(array_unique(array_filter(array_map('intval', $questiontagids), static function($value): bool {
             return $value > 0;
         })));
+        $tagcondition = '';
         if (!empty($requiredtags)) {
             $requiredparts = [];
             foreach ($requiredtags as $index => $tag) {
@@ -5661,6 +6175,23 @@ class local_aiagentapi_external extends external_api {
             } else {
                 $criteria[] = $textcondition;
             }
+        } else if (!empty($questiontagids)) {
+            [$tagidsql, $tagidparams] = $DB->get_in_or_equal($questiontagids, SQL_PARAMS_NAMED, 'ptag');
+            $tagcondition = "q.id IN (
+                SELECT ti.itemid
+                  FROM {tag_instance} ti
+                 WHERE ti.itemtype = :ptagitemtype
+                   AND ti.component = :ptagcomponent
+                   AND ti.tagid $tagidsql
+              GROUP BY ti.itemid
+                HAVING COUNT(DISTINCT ti.tagid) = :ptagcount
+            )";
+            $params = array_merge($params, [
+                'ptagitemtype' => 'question',
+                'ptagcomponent' => 'core_question',
+                'ptagcount' => count($questiontagids),
+            ], $tagidparams);
+            $criteria[] = $tagcondition;
         }
 
         $tags = self::unique_string_list(array_diff($tags, $requiredtags));
@@ -5836,6 +6367,7 @@ class local_aiagentapi_external extends external_api {
             'kg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'KG id'), 'KG ids', VALUE_DEFAULT, []),
             'qg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'QG id'), 'QG ids', VALUE_DEFAULT, []),
             'tags' => new external_multiple_structure(new external_value(PARAM_RAW, 'Teaching tag'), 'Teaching tags matched against Moodle question tags and title/text', VALUE_DEFAULT, []),
+            'tagids' => new external_multiple_structure(new external_value(PARAM_INT, 'Moodle question tag id'), 'Moodle question tag ids to require', VALUE_DEFAULT, []),
             'seed' => new external_value(PARAM_INT, 'Optional random seed', VALUE_DEFAULT, 0),
             'allow_partial' => new external_value(PARAM_BOOL, 'Create with fewer than count questions when necessary', VALUE_DEFAULT, false),
             'selection_mode' => new external_value(PARAM_ALPHANUMEXT, 'fixed or random_category', VALUE_DEFAULT, 'fixed'),
@@ -5863,6 +6395,7 @@ class local_aiagentapi_external extends external_api {
         array $kg_ids = [],
         array $qg_ids = [],
         array $tags = [],
+        array $tagids = [],
         int $seed = 0,
         bool $allow_partial = false,
         string $selection_mode = 'fixed',
@@ -5885,6 +6418,7 @@ class local_aiagentapi_external extends external_api {
             'kg_ids' => $kg_ids,
             'qg_ids' => $qg_ids,
             'tags' => $tags,
+            'tagids' => $tagids,
             'seed' => $seed,
             'allow_partial' => $allow_partial,
             'selection_mode' => $selection_mode,
@@ -5952,7 +6486,10 @@ class local_aiagentapi_external extends external_api {
             $kgids = self::unique_string_list(array_merge($facts['kg_ids'], $params['kg_ids']));
             $qgids = self::unique_string_list(array_merge($facts['qg_ids'], $params['qg_ids']));
             $requiredtags = self::unique_string_list($params['tags']);
-            $questiontagids = self::practice_question_tag_ids($requiredtags);
+            $explicitquestiontagids = array_values(array_unique(array_filter(array_map('intval', (array)$params['tagids']), static function(int $value): bool {
+                return $value > 0;
+            })));
+            $questiontagids = array_values(array_unique(array_merge($explicitquestiontagids, self::practice_question_tag_ids($requiredtags))));
             $tags = $requiredtags;
             $tags = self::unique_string_list(array_merge($tags, self::practice_standard_tags($kgids, $qgids)));
             if (empty($tags) && $targetcm) {
