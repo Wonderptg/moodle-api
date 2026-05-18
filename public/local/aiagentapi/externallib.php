@@ -54,6 +54,12 @@ class local_aiagentapi_external extends external_api {
     private const MAX_RANDOM_PICK = 100;
     /** Max copies allowed when resolving random quiz questions. */
     private const MAX_QUIZ_COPIES = 10;
+    /** Cache definition for the current user's course list. */
+    private const CACHE_COURSES = 'student_shell_courses';
+    /** Cache definition for a course outline built from Moodle coursemodinfo. */
+    private const CACHE_COURSE_OUTLINE = 'student_shell_course_outline';
+    /** Cache definition for visible quiz activities in a course. */
+    private const CACHE_QUIZ_LIST = 'student_shell_quiz_list';
 
     /**
      * Resolve a safe context for WS calls restricted by token context.
@@ -174,6 +180,69 @@ class local_aiagentapi_external extends external_api {
         });
 
         return $stats;
+    }
+
+    /**
+     * Read a plugin cache payload.
+     *
+     * These caches intentionally sit behind Moodle's own coursemodinfo cache. The
+     * heavy lifting still belongs to get_fast_modinfo(); this layer only stores
+     * the stable JSON shape consumed by the student shell.
+     *
+     * @param string $definition
+     * @param string $key
+     * @return array|null
+     */
+    private static function student_shell_cache_get(string $definition, string $key): ?array {
+        try {
+            $value = \cache::make('local_aiagentapi', $definition)->get($key);
+            return is_array($value) ? $value : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Store a plugin cache payload.
+     *
+     * @param string $definition
+     * @param string $key
+     * @param array $value
+     * @return void
+     */
+    private static function student_shell_cache_set(string $definition, string $key, array $value): void {
+        try {
+            \cache::make('local_aiagentapi', $definition)->set($key, $value);
+        } catch (\Throwable $e) {
+            // Cache writes must never mask the web service response.
+        }
+    }
+
+    /**
+     * Build a simple MUC key for user-level reads.
+     *
+     * @param int $userid
+     * @return string
+     */
+    private static function student_shell_user_cache_key(int $userid): string {
+        return 'u' . max(0, $userid);
+    }
+
+    /**
+     * Build a simple MUC key for course-content reads.
+     *
+     * The course cacherev mirrors Moodle core's coursemodinfo cache contract:
+     * when sections/modules change, cacherev changes and a new payload key is
+     * used. Old keys expire through the cache definition TTL.
+     *
+     * @param int $userid
+     * @param \stdClass $course
+     * @return string
+     */
+    private static function student_shell_course_cache_key(int $userid, \stdClass $course): string {
+        return 'u' . max(0, $userid) .
+            '_c' . max(0, (int)($course->id ?? 0)) .
+            '_r' . max(0, (int)($course->cacherev ?? 0));
     }
 
     /**
@@ -2627,23 +2696,33 @@ class local_aiagentapi_external extends external_api {
         self::restricted_context();
 
         $auditid = self::uuid_v4();
+        $cachekey = self::student_shell_user_cache_key((int)$USER->id);
 
         try {
+            $cached = self::student_shell_cache_get(self::CACHE_COURSES, $cachekey);
+            if ($cached !== null) {
+                $response = self::response_ok($auditid, $cached);
+                self::audit($USER->id, 'courses_list_my', true, $auditid, ['cache' => 'hit'], $response);
+                return $response;
+            }
+
             $courses = enrol_get_users_courses(
                 $USER->id,
                 true,
-                'id,shortname,fullname,category,visible,startdate,enddate,format,lang,enablecompletion'
+                'id,shortname,fullname,category,visible,startdate,enddate,format,lang,enablecompletion,cacherev'
             );
             $payload = [];
             foreach ($courses as $course) {
-                $payload[] = self::course_payload($course, null, true, true);
+                $payload[] = self::course_payload($course, get_fast_modinfo($course, $USER->id), true, true);
             }
 
             usort($payload, static function(array $a, array $b): int {
                 return [$a['fullname'], $a['id']] <=> [$b['fullname'], $b['id']];
             });
 
-            $response = self::response_ok($auditid, ['courses' => $payload]);
+            $data = ['courses' => $payload];
+            self::student_shell_cache_set(self::CACHE_COURSES, $cachekey, $data);
+            $response = self::response_ok($auditid, $data);
             self::audit($USER->id, 'courses_list_my', true, $auditid, [], $response);
             return $response;
         } catch (\Throwable $e) {
@@ -2702,7 +2781,15 @@ class local_aiagentapi_external extends external_api {
             self::validate_context($coursecontext);
             require_capability('moodle/course:view', $coursecontext);
 
-            $modinfo = get_fast_modinfo($course);
+            $cachekey = self::student_shell_course_cache_key((int)$USER->id, $course);
+            $cached = self::student_shell_cache_get(self::CACHE_COURSE_OUTLINE, $cachekey);
+            if ($cached !== null) {
+                $response = self::response_ok($auditid, $cached);
+                self::audit($USER->id, 'course_get_outline', true, $auditid, $params + ['cache' => 'hit'], $response);
+                return $response;
+            }
+
+            $modinfo = get_fast_modinfo($course, $USER->id);
             $sections = [];
             foreach ($modinfo->get_section_info_all() as $sectioninfo) {
                 if (!$sectioninfo || ((int)$sectioninfo->section === 0 && empty($sectioninfo->name) && empty($sectioninfo->summary))) {
@@ -2743,10 +2830,12 @@ class local_aiagentapi_external extends external_api {
                 ];
             }
 
-            $response = self::response_ok($auditid, [
+            $data = [
                 'course' => self::course_payload($course, $modinfo),
                 'sections' => $sections,
-            ]);
+            ];
+            self::student_shell_cache_set(self::CACHE_COURSE_OUTLINE, $cachekey, $data);
+            $response = self::response_ok($auditid, $data);
             self::audit($USER->id, 'course_get_outline', true, $auditid, $params, $response);
             return $response;
         } catch (\Throwable $e) {
@@ -2821,7 +2910,15 @@ class local_aiagentapi_external extends external_api {
             self::validate_context($coursecontext);
             require_capability('moodle/course:view', $coursecontext);
 
-            $modinfo = get_fast_modinfo($course);
+            $cachekey = self::student_shell_course_cache_key((int)$USER->id, $course);
+            $cached = self::student_shell_cache_get(self::CACHE_QUIZ_LIST, $cachekey);
+            if ($cached !== null) {
+                $response = self::response_ok($auditid, $cached);
+                self::audit($USER->id, 'quiz_list_by_course', true, $auditid, $params + ['cache' => 'hit'], $response);
+                return $response;
+            }
+
+            $modinfo = get_fast_modinfo($course, $USER->id);
             $quizzes = [];
             foreach ($modinfo->get_instances_of('quiz') as $cm) {
                 if (!$cm->uservisible) {
@@ -2841,10 +2938,12 @@ class local_aiagentapi_external extends external_api {
                 return [$a['sectionnum'], $a['cmid']] <=> [$b['sectionnum'], $b['cmid']];
             });
 
-            $response = self::response_ok($auditid, [
+            $data = [
                 'course' => self::course_payload($course, $modinfo),
                 'quizzes' => $quizzes,
-            ]);
+            ];
+            self::student_shell_cache_set(self::CACHE_QUIZ_LIST, $cachekey, $data);
+            $response = self::response_ok($auditid, $data);
             self::audit($USER->id, 'quiz_list_by_course', true, $auditid, $params, $response);
             return $response;
         } catch (\Throwable $e) {
