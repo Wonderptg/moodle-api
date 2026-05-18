@@ -225,6 +225,22 @@ $functions = [
         'type' => 'read',
         'capabilities' => 'local/aiagentapi:use, moodle/question:useall',
     ],
+    'local_aiagentapi_question_tags_list' => [
+        'classname' => 'local_aiagentapi_external',
+        'methodname' => 'question_tags_list',
+        'classpath' => 'local/aiagentapi/externallib.php',
+        'description' => 'List indexed Moodle question tags by course/category.',
+        'type' => 'read',
+        'capabilities' => 'local/aiagentapi:use, moodle/question:useall',
+    ],
+    'local_aiagentapi_question_tags_sync' => [
+        'classname' => 'local_aiagentapi_external',
+        'methodname' => 'question_tags_sync',
+        'classpath' => 'local/aiagentapi/externallib.php',
+        'description' => 'Rebuild indexed Moodle question tags by course/category.',
+        'type' => 'write',
+        'capabilities' => 'local/aiagentapi:use, moodle/question:useall',
+    ],
     'local_aiagentapi_questionbank_pick_random' => [
         'classname' => 'local_aiagentapi_external',
         'methodname' => 'questionbank_pick_random',
@@ -248,6 +264,14 @@ $functions = [
         'description' => 'Resolve random questions in a quiz via temporary attempts.',
         'type' => 'write',
         'capabilities' => 'local/aiagentapi:use, mod/quiz:preview',
+    ],
+    'local_aiagentapi_practice_quiz_create_from_resource' => [
+        'classname' => 'local_aiagentapi_external',
+        'methodname' => 'practice_quiz_create_from_resource',
+        'classpath' => 'local/aiagentapi/externallib.php',
+        'description' => 'Create a post-lesson practice quiz from existing mapped question-bank questions.',
+        'type' => 'write',
+        'capabilities' => 'local/aiagentapi:use, moodle/course:manageactivities, mod/quiz:addinstance, moodle/question:useall',
     ],
     'local_aiagentapi_calendar_publish_plan' => [
         'classname' => 'local_aiagentapi_external',
@@ -318,7 +342,8 @@ $functions = [
 $services = [
     'local_aiagentapi' => [
         'functions' => array_keys($functions),
-        'restrictedusers' => 0,
+        'requiredcapability' => 'local/aiagentapi:use',
+        'restrictedusers' => 1,
         'enabled' => 1,
         'shortname' => 'local_aiagentapi',
         'downloadfiles' => 1,

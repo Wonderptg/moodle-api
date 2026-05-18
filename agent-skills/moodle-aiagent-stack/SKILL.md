@@ -30,11 +30,40 @@ Use them only for plugin upgrades, service registration, data imports, seeding,
 or direct Moodle maintenance. Those scripts must run in a Moodle code tree with
 PHP and `config.php`.
 
-## OpenClaw tool-first workflow
+## Tool-first workflow
 
-When OpenClaw tools from `moodle-aiagent-stack` are available, prefer them over
-typing raw CLI commands. The tools call `scripts/moodle_cli.py` with structured
-argv, preserve safety gates, and return structured details.
+When OpenClaw or Codex MCP tools from `moodle-aiagent-stack` are available,
+prefer them over typing raw CLI commands. The tools call
+`scripts/moodle_cli.py` with structured argv, preserve safety gates, and return
+structured details.
+
+OpenClaw loads these tools through `openclaw.plugin.json` and `index.ts`.
+Codex loads the same tool surface through `.codex-plugin/plugin.json`,
+`.mcp.json`, and `scripts/moodle-mcp-server.mjs`.
+
+After installing the plugin, check login before doing Moodle work:
+
+```json
+{ "tool": "moodle_auth", "arguments": { "action": "list_profiles" } }
+{ "tool": "moodle_auth", "arguments": { "action": "status" } }
+```
+
+For this local workspace, prefer the existing `dzexam` profile when it exists:
+
+```json
+{ "tool": "moodle_auth", "arguments": { "action": "status", "name": "dzexam" } }
+```
+
+If no profile exists or the token is invalid, create or repair the profile with
+`moodle_auth` instead of asking for secrets:
+
+```json
+{ "tool": "moodle_auth", "arguments": { "action": "setup", "name": "dzexam", "baseUrl": "https://dzexam.cn" } }
+{ "tool": "moodle_auth", "arguments": { "action": "login_start", "name": "dzexam", "noWait": true } }
+```
+
+In a headless session, return the `verification_url` and `user_code` from
+`login_start` to the user.
 
 Start with `moodle_catalog` when the right action or parameter names are
 unclear:
@@ -66,8 +95,10 @@ the user asked for the change and the tool call includes `confirm=true` plus a
 stable `idempotencyKey`. Treat `forum.delete_post` as destructive; it also
 requires plugin config `allowDestructive=true`.
 
-Read tool results from `details.ok`, `details.data`, `details.meta`, and
-`details.error`. The human-facing `content` text is only a summary.
+In OpenClaw, read tool results from `details.ok`, `details.data`,
+`details.meta`, and `details.error`. In Codex MCP, read the same payload from
+`structuredContent` or parse the JSON text in `content[0].text`. The
+human-facing `content` text is only a summary.
 
 ## Environment choice
 
@@ -83,27 +114,34 @@ Use `.env.local` only when the goal is seeded deterministic regression on the lo
 ## First-time login
 
 If a command fails with a missing token or missing base URL, do not keep guessing
-env files. Set up and verify a profile first:
+env files. First check whether a profile already exists:
 
 ```bash
-python3 scripts/moodle_cli.py setup --name prod --base-url http://dzexam.cn
-python3 scripts/moodle_cli.py login --name prod
-python3 scripts/moodle_cli.py status --name prod
+python3 scripts/moodle_cli.py --json profile list
+python3 scripts/moodle_cli.py --profile dzexam --json status
+```
+
+If no usable profile exists, set up and verify one:
+
+```bash
+python3 scripts/moodle_cli.py setup --name dzexam --base-url https://dzexam.cn
+python3 scripts/moodle_cli.py login --name dzexam
+python3 scripts/moodle_cli.py status --name dzexam
 ```
 
 For headless agent sessions, start login without waiting and give the returned
 `verification_url` to the user:
 
 ```bash
-python3 scripts/moodle_cli.py --json login --name prod --no-wait
+python3 scripts/moodle_cli.py --json login --name dzexam --no-wait
 ```
 
 The old explicit commands still work:
 
 ```bash
-python3 scripts/moodle_cli.py config init --name prod --base-url http://dzexam.cn --activate
-python3 scripts/moodle_cli.py auth login --name prod
-python3 scripts/moodle_cli.py auth status --name prod
+python3 scripts/moodle_cli.py config init --name dzexam --base-url https://dzexam.cn --activate
+python3 scripts/moodle_cli.py auth login --name dzexam
+python3 scripts/moodle_cli.py auth status --name dzexam
 ```
 
 ## Canonical workflow
@@ -139,6 +177,28 @@ python3 scripts/moodle_cli.py --profile dzexam --json --force \
 
 Repeat `--category-id` when one qbank course stores the same chapter's questions in multiple Moodle question categories.
 
+Treat category ids as question-bank locations, not teaching intent. Use tags as the teaching filter:
+
+- Large chapter tags, for example `第一章`, are good for broad filtering.
+- Small section tags, for example `1.3` or `集合的基本运算`, narrow the pool.
+- Use both when possible, then inspect the dry-run `questions[].categoryid`, `qtype`, and `name`.
+
+Typical mixed-category preview:
+
+```bash
+python3 scripts/moodle_cli.py --profile dzexam --json --dry-run \
+  quiz create-practice \
+  --idempotency-key <stable-preview-key> \
+  --course-id 116 \
+  --category-id 619 \
+  --category-id 616 \
+  --tag "第一章" \
+  --tag "1.3" \
+  --count 30 \
+  --random \
+  --title "第一章 1.3 混合测试"
+```
+
 If this fails, check the WebService token user's Moodle permissions first. Do
 not switch to a `php scripts/*.php` path unless the task is explicit server
 maintenance.
@@ -159,10 +219,13 @@ maintenance.
 Treat this folder as the canonical skill source.
 
 - Claude Code adapters live under `.claude/skills/` and `plugins/`
+- Codex plugin metadata lives under `plugins/moodle-aiagent-stack/.codex-plugin/`
+- Codex MCP metadata lives in `plugins/moodle-aiagent-stack/.mcp.json`
 - OpenClaw-facing adapters live under `skills/`
 
 If the capability list or workflow changes, update this skill first, then sync the adapters.
 
 ## Read next
 
+- `plugins/moodle-aiagent-stack/README.md` when editing plugin internals or installing it for another host
 - `references/capabilities.md`

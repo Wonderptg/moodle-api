@@ -79,6 +79,8 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 - `questions pick-random`
 - `questions render-html`
 - `questions search`
+- `questions tags`
+- `questions tags-sync`
 
 ### Quiz lifecycle
 
@@ -86,6 +88,7 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 - `quiz attempt-data`
 - `quiz attempt-summary`
 - `quiz attempts`
+- `quiz create-practice`
 - `quiz list`
 - `quiz resolve-random`
 - `quiz save-attempt`
@@ -127,6 +130,7 @@ This file is generated from `scripts/moodle_cli.py --json schema` by `scripts/sy
 - `mathstate review-upsert`
 - `mathstate reviews-due`
 - `mathstate student-summary`
+- `mathstate video-progress-summary`
 - `profile add`
 - `profile list`
 - `profile remove`

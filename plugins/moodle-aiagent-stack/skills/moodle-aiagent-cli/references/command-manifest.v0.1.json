@@ -55,9 +55,9 @@
       "id": "questionbank",
       "tool": "moodle_questionbank",
       "skill": "moodle-questionbank",
-      "description": "Read Moodle question categories, search questions, pick random questions, and render question HTML.",
+      "description": "Read Moodle question categories, search questions, indexed tags, pick random questions, and render question HTML.",
       "defaultVisible": false,
-      "riskMax": "read"
+      "riskMax": "local_write"
     },
     {
       "id": "quiz",
@@ -159,7 +159,7 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py setup --name prod --base-url https://example.edu"
+        "python3 scripts/moodle_cli.py setup --name dzexam --base-url https://dzexam.cn"
       ],
       "repairHints": [
         "Run auth.login_start after setup to obtain a token."
@@ -199,7 +199,7 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json login --name prod --no-wait"
+        "python3 scripts/moodle_cli.py --json login --name dzexam --no-wait"
       ],
       "repairHints": [
         "Give the returned verification_url and user_code to the user in headless sessions."
@@ -232,7 +232,7 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json status --name prod"
+        "python3 scripts/moodle_cli.py --json status --name dzexam"
       ],
       "repairHints": [
         "If token is missing or invalid, run auth.login_start."
@@ -292,7 +292,7 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json profile use prod"
+        "python3 scripts/moodle_cli.py --json profile use dzexam"
       ],
       "repairHints": [
         "Use auth.list_profiles first if the profile name is uncertain."
@@ -326,7 +326,7 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json auth logout --name prod"
+        "python3 scripts/moodle_cli.py --json auth logout --name dzexam"
       ],
       "repairHints": [
         "Use auth.status before logout if you only need to inspect current auth state."
@@ -776,7 +776,9 @@
           "categoryId": "--category-id",
           "recurse": "--recurse",
           "qtypes": "--qtype",
-          "limit": "--limit"
+          "tagIds": "--tag-id",
+          "limit": "--limit",
+          "offset": "--offset"
         }
       },
       "webservice": "local_aiagentapi_questionbank_search",
@@ -813,18 +815,142 @@
           "repeatableCli": true,
           "api": "qtypes"
         },
+        "tagIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "required": false,
+          "repeatableCli": true,
+          "api": "tagids",
+          "description": "Moodle native question tag ids to require. Use questionbank.tags first to discover tag ids."
+        },
         "limit": {
           "type": "integer",
           "required": false,
           "default": 50,
           "api": "limit"
+        },
+        "offset": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "api": "offset"
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json questions search --course-id 116 --category-id 619 --qtype multichoice --limit 20"
+        "python3 scripts/moodle_cli.py --json questions search --course-id 116 --category-id 619 --qtype multichoice --limit 20",
+        "python3 scripts/moodle_cli.py --json questions search --course-id 116 --category-id 619 --tag-id 123 --limit 20 --offset 20"
       ],
       "repairHints": [
-        "If search returns no rows, call questionbank.categories to confirm category ids and context."
+        "If search returns no rows, call questionbank.categories to confirm category ids and context.",
+        "If you need tag ids, call questionbank.tags after running questionbank.tags_sync for the course/category."
+      ]
+    },
+    {
+      "id": "questionbank.tags",
+      "domain": "questionbank",
+      "tool": "moodle_questionbank",
+      "action": "tags",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "questions",
+          "tags"
+        ],
+        "argv": {
+          "courseId": "--course-id",
+          "categoryId": "--category-id",
+          "query": "--query",
+          "limit": "--limit",
+          "offset": "--offset"
+        }
+      },
+      "webservice": "local_aiagentapi_question_tags_list",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": true,
+          "api": "courseid"
+        },
+        "categoryId": {
+          "type": "integer",
+          "required": false,
+          "api": "categoryid"
+        },
+        "query": {
+          "type": "string",
+          "required": false,
+          "api": "query"
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "default": 50,
+          "api": "limit"
+        },
+        "offset": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "api": "offset"
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json questions tags --course-id 116 --category-id 619 --query \"第一章\" --limit 20"
+      ],
+      "repairHints": [
+        "If tags are empty after Moodle question tags were edited, run questionbank.tags_sync for the course/category."
+      ]
+    },
+    {
+      "id": "questionbank.tags_sync",
+      "domain": "questionbank",
+      "tool": "moodle_questionbank",
+      "action": "tags_sync",
+      "layer": "api",
+      "risk": "local_write",
+      "cli": {
+        "path": [
+          "questions",
+          "tags-sync"
+        ],
+        "argv": {
+          "courseId": "--course-id",
+          "categoryId": "--category-id",
+          "recurse": "--recurse"
+        }
+      },
+      "webservice": "local_aiagentapi_question_tags_sync",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": true,
+          "api": "courseid"
+        },
+        "categoryId": {
+          "type": "integer",
+          "required": false,
+          "api": "categoryid"
+        },
+        "recurse": {
+          "type": "boolean",
+          "required": false,
+          "api": "recurse"
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json questions tags-sync --course-id 116 --category-id 619"
+      ],
+      "repairHints": [
+        "This command only rebuilds local_aiagentapi_qtagidx from Moodle native question tags; it does not change Moodle question tags."
       ]
     },
     {
@@ -1200,9 +1326,11 @@
           "count": "--count",
           "section": "--section",
           "categoryIds": "--category-id",
+          "categorySpecs": "--category-spec",
           "kgIds": "--kg-id",
           "qgIds": "--qg-id",
           "tags": "--tag",
+          "tagIds": "--tag-id",
           "seed": "--seed",
           "allowPartial": "--allow-partial",
           "selectionMode": "--selection-mode",
@@ -1268,7 +1396,17 @@
           },
           "required": false,
           "api": "categoryids",
-          "description": "Repeatable Moodle question category ids.",
+          "description": "Repeatable Moodle question category ids. Category ids are source locations; use tags to express teaching scope.",
+          "repeatableCli": true
+        },
+        "categorySpecs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "required": false,
+          "api": "category_specs",
+          "description": "Repeatable category quota specs in categoryid:count form, for example 619:20. Overrides count when present.",
           "repeatableCli": true
         },
         "kgIds": {
@@ -1298,7 +1436,17 @@
           },
           "required": false,
           "api": "tags",
-          "description": "Fallback text tags.",
+          "description": "Teaching tag filters. Prefer large chapter tags such as 第一章 for broad filtering plus small section tags such as 1.3 or 集合的基本运算 for focus.",
+          "repeatableCli": true
+        },
+        "tagIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "required": false,
+          "api": "tagids",
+          "description": "Moodle native question tag ids to require. Use questionbank.tags to discover ids.",
           "repeatableCli": true
         },
         "seed": {
@@ -1344,9 +1492,15 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --profile dzexam --json --dry-run quiz create-practice --idempotency-key <key> --course-id 116 --category-id 619 --category-id 616 --count 30 --random"
+        "python3 scripts/moodle_cli.py --profile dzexam --json --dry-run quiz create-practice --idempotency-key <key> --course-id 116 --category-id 619 --category-id 616 --tag \"第一章\" --tag \"1.3\" --count 30 --random",
+        "python3 scripts/moodle_cli.py --profile dzexam --json --dry-run quiz create-practice --idempotency-key <key> --course-id 116 --category-id 619 --tag-id 123 --count 10 --random",
+        "python3 scripts/moodle_cli.py --profile dzexam --json --dry-run quiz create-practice --idempotency-key <key> --course-id 116 --category-spec 619:20 --category-spec 616:10 --tag-id 123 --random"
       ],
       "repairHints": [
+        "For mixed-category quiz creation, treat category ids as source locations and tags as the teaching filter.",
+        "Use categorySpecs when the user needs explicit per-category counts in one quiz.",
+        "Use questionbank.tags to discover Moodle tag ids when random mode must preserve tag filters.",
+        "Use a broad chapter tag such as 第一章 first, add a small-section tag such as 1.3 when needed, then inspect dry-run questions[].categoryid, qtype, and name.",
         "If creation fails with permission errors, check local/aiagentapi:use and quiz/question bank capabilities.",
         "If count validation fails, current supported maximum is 120."
       ]
@@ -2124,6 +2278,7 @@
           "type": "boolean",
           "required": false,
           "api": "subscribe",
+          "falseCli": "--no-subscribe",
           "description": "Subscribe to the discussion."
         },
         "pinned": {
@@ -2201,6 +2356,7 @@
           "type": "boolean",
           "required": false,
           "api": "subscribe",
+          "falseCli": "--no-subscribe",
           "description": "Subscribe to the discussion."
         },
         "privateReply": {
@@ -2278,6 +2434,7 @@
           "type": "boolean",
           "required": false,
           "api": "subscribe",
+          "falseCli": "--no-subscribe",
           "description": "Subscribe to the discussion."
         },
         "pinned": {
@@ -2492,6 +2649,13 @@
           "type": "array",
           "items": {
             "type": "integer"
+          },
+          "required": false
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
           },
           "required": false
         },
