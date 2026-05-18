@@ -103,7 +103,7 @@ def build_frontmatter(spec: AdapterSpec) -> str:
     lines = [
         "---",
         f"name: {spec.name}",
-        f"description: {spec.description}",
+        f"description: {json.dumps(spec.description, ensure_ascii=False)}",
     ]
     if spec.metadata:
         lines.append(spec.metadata)

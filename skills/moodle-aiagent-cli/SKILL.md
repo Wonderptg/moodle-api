@@ -1,6 +1,6 @@
 ---
 name: moodle-aiagent-cli
-description: Use this skill for the Moodle AI agent stack in this repository. It covers Moodle reads and writes through the remote WebService CLI, seeded regression, quiz attempts, question-bank actions, calendar plans, assignments, forums, and extending `local_aiagentapi`.
+description: "Use this skill for the Moodle AI agent stack in this repository. It covers Moodle reads and writes through the remote WebService CLI, seeded regression, quiz attempts, question-bank actions, calendar plans, assignments, forums, and extending `local_aiagentapi`."
 metadata: {"openclaw":{"requires":{"bins":["python3"]}}}
 ---
 

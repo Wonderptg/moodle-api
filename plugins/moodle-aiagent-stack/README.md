@@ -112,7 +112,7 @@ codex plugin marketplace add /Users/wonder/Documents/moodle
 Codex MCP-only fallback:
 
 ```bash
-codex mcp add moodle-aiagent -- \
+codex mcp add moodle_aiagent -- \
   node /Users/wonder/Documents/moodle/plugins/moodle-aiagent-stack/scripts/moodle-mcp-server.mjs
 ```
 
@@ -150,7 +150,7 @@ CODEX_HOME=/Users/wonder/Documents/moodle/tmp/codex-home \
   codex plugin marketplace add /Users/wonder/Documents/moodle
 
 CODEX_HOME=/Users/wonder/Documents/moodle/tmp/codex-home-mcp \
-  codex mcp add moodle-aiagent -- \
+  codex mcp add moodle_aiagent -- \
   node /Users/wonder/Documents/moodle/plugins/moodle-aiagent-stack/scripts/moodle-mcp-server.mjs
 
 CODEX_HOME=/Users/wonder/Documents/moodle/tmp/codex-home-mcp codex mcp list

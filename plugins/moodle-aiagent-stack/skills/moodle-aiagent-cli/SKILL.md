@@ -1,6 +1,6 @@
 ---
 name: moodle-aiagent-cli
-description: Use when working with the local Moodle AI agent stack in this repository: reading or writing Moodle data through the remote WebService CLI, seeding demo data, running live regression, or extending `local_aiagentapi`. Trigger for tasks involving courses, calendar plans, assignments, forums, quizzes, question banks, or Moodle automation in this repo.
+description: "Use when working with the local Moodle AI agent stack in this repository: reading or writing Moodle data through the remote WebService CLI, seeding demo data, running live regression, or extending `local_aiagentapi`. Trigger for tasks involving courses, calendar plans, assignments, forums, quizzes, question banks, or Moodle automation in this repo."
 ---
 
 # Moodle AI Agent CLI

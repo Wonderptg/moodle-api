@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "moodle-aiagent": {
+    "moodle_aiagent": {
       "command": "node",
       "args": [
         "./scripts/moodle-mcp-server.mjs"
