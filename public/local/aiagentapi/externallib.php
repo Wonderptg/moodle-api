@@ -5958,6 +5958,22 @@ class local_aiagentapi_external extends external_api {
             if (empty($tags) && $targetcm) {
                 $tags = self::practice_title_tags((string)$targetcm->name);
             }
+            if ($selectionmode === 'random_category' && !empty($requiredtags) && empty($questiontagids)) {
+                $payload = self::empty_practice_quiz_payload($params);
+                $payload['resource_map'] = $facts;
+                $payload['tags'] = $tags;
+                $payload['tag_ids'] = [];
+                $response = self::response_error(
+                    $auditid,
+                    'random_tags_not_resolved',
+                    'Random practice quizzes can only preserve tag filters when the requested tags exist as Moodle question tags. Use fixed mode or sync these labels into Moodle question tags first.',
+                    (bool)$params['dry_run'],
+                    false,
+                    $payload
+                );
+                self::audit($USER->id, $action, false, $auditid, $params, $response);
+                return $response;
+            }
 
             $questions = self::practice_pick_questions(
                 $course,
