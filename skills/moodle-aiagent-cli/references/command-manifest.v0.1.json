@@ -159,7 +159,7 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py setup --name prod --base-url https://example.edu"
+        "python3 scripts/moodle_cli.py setup --name dzexam --base-url https://dzexam.cn"
       ],
       "repairHints": [
         "Run auth.login_start after setup to obtain a token."
@@ -199,7 +199,7 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json login --name prod --no-wait"
+        "python3 scripts/moodle_cli.py --json login --name dzexam --no-wait"
       ],
       "repairHints": [
         "Give the returned verification_url and user_code to the user in headless sessions."
@@ -232,7 +232,7 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json status --name prod"
+        "python3 scripts/moodle_cli.py --json status --name dzexam"
       ],
       "repairHints": [
         "If token is missing or invalid, run auth.login_start."
@@ -292,7 +292,7 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json profile use prod"
+        "python3 scripts/moodle_cli.py --json profile use dzexam"
       ],
       "repairHints": [
         "Use auth.list_profiles first if the profile name is uncertain."
@@ -326,7 +326,7 @@
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json auth logout --name prod"
+        "python3 scripts/moodle_cli.py --json auth logout --name dzexam"
       ],
       "repairHints": [
         "Use auth.status before logout if you only need to inspect current auth state."
