@@ -31,7 +31,6 @@ COMMAND_MANIFEST = (
 SYNCED_COMMAND_MANIFESTS = [
     PLUGIN_DIR / "skills" / "moodle-aiagent-cli" / "references" / "command-manifest.v0.1.json",
     ROOT / "skills" / "moodle-aiagent-cli" / "references" / "command-manifest.v0.1.json",
-    ROOT / ".claude" / "skills" / "moodle-aiagent-cli" / "references" / "command-manifest.v0.1.json",
 ]
 WRITE_RISKS = {"write", "high_write", "destructive"}
 REQUIRED_CONFIG_KEYS = {

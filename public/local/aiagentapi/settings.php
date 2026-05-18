@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Plugin version and other meta-data are defined here.
+ * Admin settings for local_aiagentapi.
  *
  * @package     local_aiagentapi
  * @copyright   2026
@@ -24,8 +24,11 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-$plugin->component = 'local_aiagentapi';
-$plugin->version = 2026051400;
-$plugin->requires = 2025100600.00; // Moodle 5.1.
-$plugin->maturity = MATURITY_ALPHA;
-$plugin->release = '0.3.0';
+if ($hassiteconfig) {
+    $ADMIN->add('localplugins', new admin_externalpage(
+        'local_aiagentapi_access',
+        get_string('accessmanage_title', 'local_aiagentapi'),
+        new moodle_url('/local/aiagentapi/manage_access.php'),
+        'moodle/site:config'
+    ));
+}

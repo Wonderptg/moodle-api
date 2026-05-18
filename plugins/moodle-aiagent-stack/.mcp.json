@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "moodle-aiagent": {
+      "command": "node",
+      "args": [
+        "./scripts/moodle-mcp-server.mjs"
+      ],
+      "cwd": ".",
+      "env": {
+        "MOODLE_DEFAULT_WRITE_DRY_RUN": "true",
+        "MOODLE_ENABLE_API_TOOL": "false",
+        "MOODLE_ALLOW_API_WRITES": "false",
+        "MOODLE_ALLOW_DESTRUCTIVE": "false"
+      }
+    }
+  }
+}

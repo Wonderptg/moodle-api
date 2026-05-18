@@ -1,6 +1,28 @@
 # Moodle CLI
 
-Agent-facing CLI wrapper for `/Users/wonder/Documents/moodle/public/local/aiagentapi`.
+Agent-facing remote WebService CLI wrapper for `local_aiagentapi`.
+
+## Read This First
+
+There are two different tool families in this repository:
+
+| Tool family | Main path | Runs where | Requires | Use for |
+| --- | --- | --- | --- | --- |
+| Remote Moodle CLI | `scripts/moodle_cli.py` / `bin/moodle` | Any machine with network access | Python, Moodle base URL, WebService token/profile | Reading courses, listing quizzes, starting attempts, creating online practice quizzes through `local_aiagentapi` |
+| Moodle PHP maintenance scripts | `scripts/*.php`, `admin/cli/*.php` | Moodle code directory | PHP, Moodle `config.php`, correct Moodle root | Plugin upgrade, service registration, data imports, one-off DB maintenance |
+
+Important: `moodle_cli.py` does **not** need local PHP, `public/config.php`, or the
+server code directory. It calls:
+
+```text
+https://dzexam.cn/webservice/rest/server.php
+  -> local_aiagentapi
+  -> Moodle server-side PHP plugin logic
+```
+
+If an agent says it cannot create an online quiz because the local environment has
+no PHP or no `public/config.php`, it is using the wrong tool family. Online quiz
+creation should use `quiz create-practice` through the remote Moodle CLI.
 
 Design goals (aligned with Feishu/Lark-style CLI ergonomics):
 
@@ -15,6 +37,7 @@ Important:
 - this CLI is a thin wrapper
 - the real backend contract remains `local_aiagentapi`
 - business logic should stay server-side
+- Moodle permissions still apply to the token user; admin tokens can create quizzes, student tokens should not
 
 ## Script path
 
@@ -128,7 +151,7 @@ Use these top-level aliases first. They are easier for agents to discover than
 the lower-level `config` / `auth` commands:
 
 ```bash
-bin/moodle setup --name prod --base-url http://dzexam.cn
+bin/moodle setup --name prod --base-url https://dzexam.cn
 bin/moodle login --name prod
 bin/moodle status --name prod
 bin/moodle --json context get
@@ -149,7 +172,7 @@ bin/moodle login --name prod --device-code <DEVICE_CODE>
 ### 1) Initialize local profile
 
 ```bash
-bin/moodle config init --name prod --base-url http://dzexam.cn --activate
+bin/moodle config init --name prod --base-url https://dzexam.cn --activate
 ```
 
 ### 2) Login (recommended: browser/device flow)
@@ -540,6 +563,58 @@ bin/moodle --env-file .env.local --json \
 ```bash
 bin/moodle --env-file .env.local --json \
   quiz list --course-id 12
+```
+
+### Create a post-lesson practice quiz
+
+Creates a quiz from existing Moodle question-bank questions. The server picks questions from
+`local_oc_shell_resource_map` / `local_mathstate_question_map` first, then falls back to standard
+KG/QG Chinese names and explicit text tags. Created quizzes are hidden by default; pass
+`--visible` only when you want students to see it immediately.
+`--count` may request up to 120 questions; use `--allow-partial` when a lesson/tag pool may
+contain fewer questions than requested.
+If one qbank course stores related questions in several Moodle question categories, repeat
+`--category-id` to merge those categories into one quiz.
+
+By default the quiz contains fixed question slots. Use `--random` or
+`--selection-mode random_category` to create Moodle native random slots from the selected question
+category. With repeated `--category-id`, random mode adds native random slots for each selected
+category in the same quiz.
+
+```bash
+bin/moodle --env-file .env.local --json --dry-run \
+  quiz create-practice \
+  --idempotency-key practice-preview-001 \
+  --course-id 26 \
+  --cmid 2943 \
+  --count 5
+
+bin/moodle --env-file .env.local --json --force \
+  quiz create-practice \
+  --idempotency-key practice-create-001 \
+  --course-id 26 \
+  --cmid 2943 \
+  --count 5 \
+  --title "课后练习 - 1.3 集合间的基本运算"
+
+bin/moodle --env-file .env.local --json --force \
+  quiz create-practice \
+  --idempotency-key practice-random-001 \
+  --course-id 26 \
+  --cmid 2943 \
+  --count 5 \
+  --random \
+  --title "随机课后练习 - 1.3 集合间的基本运算"
+
+bin/moodle --profile dzexam --json --dry-run --force \
+  quiz create-practice \
+  --idempotency-key practice-mixed-category-preview-001 \
+  --course-id 116 \
+  --category-id 619 \
+  --category-id 616 \
+  --count 30 \
+  --random \
+  --title "第一章混合题型测试"
 ```
 
 ### List my quiz attempts

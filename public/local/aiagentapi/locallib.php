@@ -212,3 +212,212 @@ function local_aiagentapi_device_verify_url(string $usercode): moodle_url {
         'user_code' => $usercode,
     ]);
 }
+
+/**
+ * Find a non-deleted Moodle user by username, phone number, or unique email.
+ *
+ * @param string $identifier
+ * @return stdClass|null
+ */
+function local_aiagentapi_find_access_user(string $identifier): ?stdClass {
+    global $CFG, $DB;
+
+    $identifier = trim(core_text::strtolower($identifier));
+    if ($identifier === '') {
+        return null;
+    }
+
+    $baseconditions = [
+        'mnethostid' => $CFG->mnet_localhost_id,
+        'deleted' => 0,
+    ];
+
+    $user = $DB->get_record('user', $baseconditions + ['username' => $identifier]);
+    if ($user) {
+        return $user;
+    }
+
+    $phone = preg_replace('/\D+/', '', $identifier);
+    if ($phone !== '') {
+        $user = $DB->get_record('user', $baseconditions + ['phone1' => $phone]);
+        if ($user) {
+            return $user;
+        }
+    }
+
+    if (clean_param($identifier, PARAM_EMAIL) === $identifier) {
+        $users = $DB->get_records_select(
+            'user',
+            'mnethostid = :mnethostid AND deleted = 0 AND LOWER(email) = LOWER(:email)',
+            ['mnethostid' => $CFG->mnet_localhost_id, 'email' => $identifier],
+            'id ASC',
+            '*',
+            0,
+            2
+        );
+        if (count($users) === 1) {
+            return reset($users);
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Ensure the small system role used to grant local_aiagentapi access exists.
+ *
+ * @return int Role id.
+ */
+function local_aiagentapi_ensure_access_role(): int {
+    global $DB;
+
+    $systemcontext = context_system::instance();
+    $role = $DB->get_record('role', ['shortname' => 'aiagentapiuser']);
+    if ($role) {
+        $roleid = (int)$role->id;
+    } else {
+        $roleid = create_role(
+            get_string('accessrole_name', 'local_aiagentapi'),
+            'aiagentapiuser',
+            get_string('accessrole_description', 'local_aiagentapi')
+        );
+    }
+
+    if (!$DB->record_exists('role_context_levels', ['roleid' => $roleid, 'contextlevel' => CONTEXT_SYSTEM])) {
+        $record = (object) [
+            'roleid' => $roleid,
+            'contextlevel' => CONTEXT_SYSTEM,
+        ];
+        $DB->insert_record('role_context_levels', $record);
+    }
+
+    assign_capability('local/aiagentapi:use', CAP_ALLOW, $roleid, $systemcontext, true);
+    return $roleid;
+}
+
+/**
+ * Grant a user access to Xiaolin Classroom's local_aiagentapi service.
+ *
+ * @param stdClass $user
+ * @return array
+ */
+function local_aiagentapi_grant_classroom_access(stdClass $user): array {
+    global $CFG, $DB;
+
+    require_once($CFG->libdir . '/externallib.php');
+
+    if (!empty($user->deleted)) {
+        throw new moodle_exception('accessmanage_userdeleted', 'local_aiagentapi');
+    }
+    if (!empty($user->suspended)) {
+        throw new moodle_exception('accessmanage_usersuspended', 'local_aiagentapi');
+    }
+    if (empty($user->confirmed)) {
+        throw new moodle_exception('accessmanage_userunconfirmed', 'local_aiagentapi');
+    }
+
+    $systemcontext = context_system::instance();
+    $service = local_aiagentapi_get_enabled_service('local_aiagentapi');
+    $roleid = local_aiagentapi_ensure_access_role();
+    role_assign($roleid, (int)$user->id, $systemcontext, 'local_aiagentapi');
+
+    $allowed = $DB->get_record('external_services_users', [
+        'externalserviceid' => (int)$service->id,
+        'userid' => (int)$user->id,
+    ]);
+    if (!$allowed) {
+        $allowed = (object) [
+            'externalserviceid' => (int)$service->id,
+            'userid' => (int)$user->id,
+            'iprestriction' => '',
+            'validuntil' => 0,
+            'timecreated' => time(),
+        ];
+        $DB->insert_record('external_services_users', $allowed);
+    } else {
+        $allowed->iprestriction = '';
+        $allowed->validuntil = 0;
+        $DB->update_record('external_services_users', $allowed);
+    }
+
+    $tokencreated = false;
+    $tokens = $DB->get_records('external_tokens', [
+        'userid' => (int)$user->id,
+        'externalserviceid' => (int)$service->id,
+        'tokentype' => EXTERNAL_TOKEN_PERMANENT,
+    ], 'timecreated ASC');
+
+    if (empty($tokens)) {
+        \core_external\util::generate_token(
+            EXTERNAL_TOKEN_PERMANENT,
+            $service,
+            (int)$user->id,
+            $systemcontext,
+            time() + (int)$CFG->tokenduration,
+            '',
+            get_string('accessmanage_tokenname', 'local_aiagentapi')
+        );
+        $tokencreated = true;
+    }
+
+    return [
+        'userid' => (int)$user->id,
+        'username' => (string)$user->username,
+        'fullname' => fullname($user),
+        'tokencreated' => $tokencreated,
+    ];
+}
+
+/**
+ * Revoke local_aiagentapi service access for a user.
+ *
+ * @param int $userid
+ * @return void
+ */
+function local_aiagentapi_revoke_classroom_access(int $userid): void {
+    global $DB;
+
+    $service = local_aiagentapi_get_enabled_service('local_aiagentapi');
+    $role = $DB->get_record('role', ['shortname' => 'aiagentapiuser']);
+    if ($role) {
+        role_unassign((int)$role->id, $userid, context_system::instance()->id, 'local_aiagentapi');
+    }
+
+    $DB->delete_records('external_services_users', [
+        'externalserviceid' => (int)$service->id,
+        'userid' => $userid,
+    ]);
+    $DB->delete_records('external_tokens', [
+        'externalserviceid' => (int)$service->id,
+        'userid' => $userid,
+        'tokentype' => EXTERNAL_TOKEN_PERMANENT,
+    ]);
+}
+
+/**
+ * List users currently authorised for local_aiagentapi.
+ *
+ * @return array
+ */
+function local_aiagentapi_list_classroom_access_users(): array {
+    global $DB;
+
+    $service = local_aiagentapi_get_enabled_service('local_aiagentapi');
+    return $DB->get_records_sql(
+        "SELECT u.id, u.username, u.firstname, u.lastname, u.email, u.phone1,
+                u.suspended, u.confirmed, esu.timecreated,
+                COUNT(t.id) AS tokencount
+           FROM {external_services_users} esu
+           JOIN {user} u ON u.id = esu.userid
+      LEFT JOIN {external_tokens} t
+             ON t.userid = u.id
+            AND t.externalserviceid = esu.externalserviceid
+            AND t.tokentype = :tokentype
+          WHERE esu.externalserviceid = :serviceid
+            AND u.deleted = 0
+       GROUP BY u.id, u.username, u.firstname, u.lastname, u.email, u.phone1,
+                u.suspended, u.confirmed, esu.timecreated
+       ORDER BY esu.timecreated DESC, u.id DESC",
+        ['serviceid' => (int)$service->id, 'tokentype' => EXTERNAL_TOKEN_PERMANENT]
+    );
+}

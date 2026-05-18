@@ -30,11 +30,16 @@ Use them only for plugin upgrades, service registration, data imports, seeding,
 or direct Moodle maintenance. Those scripts must run in a Moodle code tree with
 PHP and `config.php`.
 
-## OpenClaw tool-first workflow
+## Tool-first workflow
 
-When OpenClaw tools from `moodle-aiagent-stack` are available, prefer them over
-typing raw CLI commands. The tools call `scripts/moodle_cli.py` with structured
-argv, preserve safety gates, and return structured details.
+When OpenClaw or Codex MCP tools from `moodle-aiagent-stack` are available,
+prefer them over typing raw CLI commands. The tools call
+`scripts/moodle_cli.py` with structured argv, preserve safety gates, and return
+structured details.
+
+OpenClaw loads these tools through `openclaw.plugin.json` and `index.ts`.
+Codex loads the same tool surface through `.codex-plugin/plugin.json`,
+`.mcp.json`, and `scripts/moodle-mcp-server.mjs`.
 
 Start with `moodle_catalog` when the right action or parameter names are
 unclear:
@@ -66,8 +71,10 @@ the user asked for the change and the tool call includes `confirm=true` plus a
 stable `idempotencyKey`. Treat `forum.delete_post` as destructive; it also
 requires plugin config `allowDestructive=true`.
 
-Read tool results from `details.ok`, `details.data`, `details.meta`, and
-`details.error`. The human-facing `content` text is only a summary.
+In OpenClaw, read tool results from `details.ok`, `details.data`,
+`details.meta`, and `details.error`. In Codex MCP, read the same payload from
+`structuredContent` or parse the JSON text in `content[0].text`. The
+human-facing `content` text is only a summary.
 
 ## Environment choice
 
@@ -86,7 +93,7 @@ If a command fails with a missing token or missing base URL, do not keep guessin
 env files. Set up and verify a profile first:
 
 ```bash
-python3 scripts/moodle_cli.py setup --name prod --base-url http://dzexam.cn
+python3 scripts/moodle_cli.py setup --name prod --base-url https://dzexam.cn
 python3 scripts/moodle_cli.py login --name prod
 python3 scripts/moodle_cli.py status --name prod
 ```
@@ -101,7 +108,7 @@ python3 scripts/moodle_cli.py --json login --name prod --no-wait
 The old explicit commands still work:
 
 ```bash
-python3 scripts/moodle_cli.py config init --name prod --base-url http://dzexam.cn --activate
+python3 scripts/moodle_cli.py config init --name prod --base-url https://dzexam.cn --activate
 python3 scripts/moodle_cli.py auth login --name prod
 python3 scripts/moodle_cli.py auth status --name prod
 ```
@@ -159,10 +166,13 @@ maintenance.
 Treat this folder as the canonical skill source.
 
 - Claude Code adapters live under `.claude/skills/` and `plugins/`
+- Codex plugin metadata lives under `plugins/moodle-aiagent-stack/.codex-plugin/`
+- Codex MCP metadata lives in `plugins/moodle-aiagent-stack/.mcp.json`
 - OpenClaw-facing adapters live under `skills/`
 
 If the capability list or workflow changes, update this skill first, then sync the adapters.
 
 ## Read next
 
+- `plugins/moodle-aiagent-stack/README.md` when editing plugin internals or installing it for another host
 - `references/capabilities.md`

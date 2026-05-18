@@ -99,5 +99,19 @@ function xmldb_local_aiagentapi_upgrade(int $oldversion): bool {
         upgrade_plugin_savepoint(true, 2026041100, 'local', 'aiagentapi');
     }
 
+    // 2026051400: lock the CLI web service to explicitly authorised users.
+    if ($oldversion < 2026051400) {
+        $service = $DB->get_record('external_services', ['shortname' => 'local_aiagentapi']);
+        if ($service) {
+            $service->requiredcapability = 'local/aiagentapi:use';
+            $service->restrictedusers = 1;
+            $service->enabled = 1;
+            $service->timemodified = time();
+            $DB->update_record('external_services', $service);
+        }
+
+        upgrade_plugin_savepoint(true, 2026051400, 'local', 'aiagentapi');
+    }
+
     return true;
 }

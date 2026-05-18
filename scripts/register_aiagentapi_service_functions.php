@@ -49,8 +49,8 @@ if (!$service) {
     $service = (object) [
         'name' => $options['service-shortname'],
         'enabled' => 1,
-        'requiredcapability' => null,
-        'restrictedusers' => 0,
+        'requiredcapability' => 'local/aiagentapi:use',
+        'restrictedusers' => 1,
         'component' => 'local_aiagentapi',
         'timecreated' => time(),
         'timemodified' => null,
@@ -59,6 +59,24 @@ if (!$service) {
         'uploadfiles' => 1,
     ];
     $service->id = $DB->insert_record('external_services', $service);
+} else {
+    $updateservice = false;
+    if ((string)$service->requiredcapability !== 'local/aiagentapi:use') {
+        $service->requiredcapability = 'local/aiagentapi:use';
+        $updateservice = true;
+    }
+    if ((int)$service->restrictedusers !== 1) {
+        $service->restrictedusers = 1;
+        $updateservice = true;
+    }
+    if ((int)$service->enabled !== 1) {
+        $service->enabled = 1;
+        $updateservice = true;
+    }
+    if ($updateservice) {
+        $service->timemodified = time();
+        $DB->update_record('external_services', $service);
+    }
 }
 
 $functions = $DB->get_records_select(

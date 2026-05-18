@@ -61,7 +61,7 @@ ADAPTERS = [
             "banks, or Moodle automation in this repo."
         ),
         title="Moodle AI Agent CLI",
-        adapter_note="This is a Claude Code plugin adapter for the canonical generic skill.",
+        adapter_note="This is a plugin adapter for the canonical generic skill.",
     ),
     AdapterSpec(
         path=ROOT / "skills" / "moodle-aiagent-cli" / "SKILL.md",

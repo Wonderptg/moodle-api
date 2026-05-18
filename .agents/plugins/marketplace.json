@@ -1,0 +1,20 @@
+{
+  "name": "wonder-moodle",
+  "interface": {
+    "displayName": "Wonder Moodle"
+  },
+  "plugins": [
+    {
+      "name": "moodle-aiagent-stack",
+      "source": {
+        "source": "local",
+        "path": "./plugins/moodle-aiagent-stack"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Coding"
+    }
+  ]
+}
