@@ -1928,7 +1928,7 @@ class local_aiagentapi_external extends external_api {
                     ['name' => 'categoryids', 'type' => 'array', 'required' => false, 'description' => 'Optional extra question category ids for mixed-category quizzes.'],
                     ['name' => 'kg_ids', 'type' => 'array', 'required' => false, 'description' => 'Additional KG ids.'],
                     ['name' => 'qg_ids', 'type' => 'array', 'required' => false, 'description' => 'Additional QG ids.'],
-                    ['name' => 'tags', 'type' => 'array', 'required' => false, 'description' => 'Fallback text tags searched in question title/text.'],
+                    ['name' => 'tags', 'type' => 'array', 'required' => false, 'description' => 'Teaching tag filters. Explicit tags are matched against Moodle question tags and title/text.'],
                     ['name' => 'seed', 'type' => 'int', 'required' => false, 'description' => 'Optional random seed.'],
                     ['name' => 'allow_partial', 'type' => 'bool', 'required' => false, 'description' => 'Create with fewer than count questions when necessary.'],
                     ['name' => 'selection_mode', 'type' => 'string', 'required' => false, 'description' => 'fixed or random_category.'],
@@ -1936,8 +1936,8 @@ class local_aiagentapi_external extends external_api {
                     ['name' => 'dry_run', 'type' => 'bool', 'required' => false, 'description' => 'Validate and preview without writing.'],
                     ['name' => 'reason', 'type' => 'string', 'required' => false, 'description' => 'Optional audit reason.'],
                 ],
-                'data_fields' => ['quizid', 'quiz_cmid', 'url', 'selection_mode', 'visible', 'questions[]', 'resource_map'],
-                'notes' => 'Uses Moodle native course, quiz, and question capabilities; fixed mode adds concrete questions, random_category mode adds Moodle random slots from the selected question category.',
+                'data_fields' => ['quizid', 'quiz_cmid', 'url', 'selection_mode', 'visible', 'questions[]', 'resource_map', 'tags[]', 'tag_ids[]'],
+                'notes' => 'Uses Moodle native course, quiz, and question capabilities. Explicit tags such as 第一章 + 1.3 are strict teaching filters; random_category mode preserves resolved Moodle tag ids in random slots.',
             ],
             [
                 'name' => 'local_aiagentapi_quiz_start_attempt',
@@ -5372,6 +5372,47 @@ class local_aiagentapi_external extends external_api {
     }
 
     /**
+     * Resolve Moodle question tag ids for explicitly requested teaching tags.
+     *
+     * @param array $tags
+     * @return array
+     */
+    private static function practice_question_tag_ids(array $tags): array {
+        global $DB;
+
+        $tags = self::unique_string_list($tags);
+        if (empty($tags)) {
+            return [];
+        }
+
+        $tagids = [];
+        foreach ($tags as $index => $tag) {
+            $record = $DB->get_record_sql(
+                "SELECT t.id, COUNT(ti.id) AS usecount
+                   FROM {tag} t
+                   JOIN {tag_instance} ti ON ti.tagid = t.id
+                  WHERE ti.component = :tagcomponent$index
+                    AND ti.itemtype = :tagitemtype$index
+                    AND (t.rawname = :tagraw$index OR t.name = :tagname$index)
+               GROUP BY t.id
+               ORDER BY usecount DESC, t.id ASC",
+                [
+                    'tagcomponent' . $index => 'core_question',
+                    'tagitemtype' . $index => 'question',
+                    'tagraw' . $index => $tag,
+                    'tagname' . $index => core_text::strtolower($tag),
+                ],
+                IGNORE_MULTIPLE
+            );
+            if ($record) {
+                $tagids[] = (int)$record->id;
+            }
+        }
+
+        return array_values(array_unique(array_filter($tagids)));
+    }
+
+    /**
      * Add names, aliases, and tags from standard KG/QG tables.
      *
      * @param array $kgids
@@ -5518,6 +5559,8 @@ class local_aiagentapi_external extends external_api {
      * @param array $tags
      * @param int $limit
      * @param int $seed
+     * @param array $requiredtags
+     * @param array $questiontagids
      * @return array
      */
     private static function practice_pick_questions(
@@ -5527,7 +5570,9 @@ class local_aiagentapi_external extends external_api {
         array $qgids,
         array $tags,
         int $limit,
-        int $seed
+        int $seed,
+        array $requiredtags = [],
+        array $questiontagids = []
     ): array {
         global $DB;
 
@@ -5581,7 +5626,44 @@ class local_aiagentapi_external extends external_api {
             }
         }
 
-        $tags = self::unique_string_list($tags);
+        $requiredtags = self::unique_string_list($requiredtags);
+        $questiontagids = array_values(array_unique(array_filter(array_map('intval', $questiontagids), static function($value): bool {
+            return $value > 0;
+        })));
+        if (!empty($requiredtags)) {
+            $requiredparts = [];
+            foreach ($requiredtags as $index => $tag) {
+                $key = 'reqtag' . $index;
+                $requiredparts[] = '(' . $DB->sql_like('q.name', ':' . $key, false, false) . ' OR ' .
+                    $DB->sql_like('q.questiontext', ':' . $key . 't', false, false) . ')';
+                $params[$key] = '%' . $tag . '%';
+                $params[$key . 't'] = '%' . $tag . '%';
+            }
+            $textcondition = '(' . implode(' AND ', $requiredparts) . ')';
+
+            if (!empty($questiontagids)) {
+                [$tagidsql, $tagidparams] = $DB->get_in_or_equal($questiontagids, SQL_PARAMS_NAMED, 'ptag');
+                $tagcondition = "q.id IN (
+                    SELECT ti.itemid
+                      FROM {tag_instance} ti
+                     WHERE ti.itemtype = :ptagitemtype
+                       AND ti.component = :ptagcomponent
+                       AND ti.tagid $tagidsql
+                  GROUP BY ti.itemid
+                    HAVING COUNT(DISTINCT ti.tagid) = :ptagcount
+                )";
+                $params = array_merge($params, [
+                    'ptagitemtype' => 'question',
+                    'ptagcomponent' => 'core_question',
+                    'ptagcount' => count($questiontagids),
+                ], $tagidparams);
+                $criteria[] = '(' . $tagcondition . ' OR ' . $textcondition . ')';
+            } else {
+                $criteria[] = $textcondition;
+            }
+        }
+
+        $tags = self::unique_string_list(array_diff($tags, $requiredtags));
         if (!empty($tags)) {
             $tagparts = [];
             foreach ($tags as $index => $tag) {
@@ -5613,6 +5695,30 @@ class local_aiagentapi_external extends external_api {
               ORDER BY q.timemodified DESC, q.id DESC';
 
         $records = array_values($DB->get_records_sql($sql, $params, 0, max($limit * 4, 50)));
+        $tagmatchcounts = [];
+        if (!empty($records) && !empty($questiontagids)) {
+            $questionids = array_values(array_unique(array_map(static function($record): int {
+                return (int)$record->id;
+            }, $records)));
+            [$qidsql, $qidparams] = $DB->get_in_or_equal($questionids, SQL_PARAMS_NAMED, 'pmq');
+            [$tagmatchsql, $tagmatchparams] = $DB->get_in_or_equal($questiontagids, SQL_PARAMS_NAMED, 'pmt');
+            $tagmatchrecords = $DB->get_records_sql(
+                "SELECT ti.itemid, COUNT(DISTINCT ti.tagid) AS tagcount
+                   FROM {tag_instance} ti
+                  WHERE ti.itemtype = :pmitemtype
+                    AND ti.component = :pmcomponent
+                    AND ti.itemid $qidsql
+                    AND ti.tagid $tagmatchsql
+               GROUP BY ti.itemid",
+                array_merge([
+                    'pmitemtype' => 'question',
+                    'pmcomponent' => 'core_question',
+                ], $qidparams, $tagmatchparams)
+            );
+            foreach ($tagmatchrecords as $itemid => $tagmatchrecord) {
+                $tagmatchcounts[(int)$itemid] = (int)$tagmatchrecord->tagcount;
+            }
+        }
         if ($seed > 0) {
             mt_srand($seed);
             shuffle($records);
@@ -5629,7 +5735,18 @@ class local_aiagentapi_external extends external_api {
             if (!empty(array_intersect($recordkgids, $kgids))) {
                 $score += 80;
             }
+            $matchedtagcount = (int)($tagmatchcounts[(int)$record->id] ?? 0);
+            if ($matchedtagcount > 0) {
+                $score += 40 + ($matchedtagcount * 10);
+            }
             foreach ($tags as $tag) {
+                if (self::practice_text_contains((string)$record->name, $tag)) {
+                    $score += 30;
+                } else if (self::practice_text_contains((string)$record->questiontext, $tag)) {
+                    $score += 5;
+                }
+            }
+            foreach ($requiredtags as $tag) {
                 if (self::practice_text_contains((string)$record->name, $tag)) {
                     $score += 30;
                 } else if (self::practice_text_contains((string)$record->questiontext, $tag)) {
@@ -5694,6 +5811,8 @@ class local_aiagentapi_external extends external_api {
                 'lesson_keys' => [],
                 'resources' => [],
             ],
+            'tags' => [],
+            'tag_ids' => [],
             'available' => 0,
             'requested' => (int)($params['count'] ?? 0),
         ];
@@ -5716,7 +5835,7 @@ class local_aiagentapi_external extends external_api {
             'categoryid' => new external_value(PARAM_INT, 'Optional question category id', VALUE_DEFAULT, 0),
             'kg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'KG id'), 'KG ids', VALUE_DEFAULT, []),
             'qg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'QG id'), 'QG ids', VALUE_DEFAULT, []),
-            'tags' => new external_multiple_structure(new external_value(PARAM_RAW, 'Text tag'), 'Fallback text tags', VALUE_DEFAULT, []),
+            'tags' => new external_multiple_structure(new external_value(PARAM_RAW, 'Teaching tag'), 'Teaching tags matched against Moodle question tags and title/text', VALUE_DEFAULT, []),
             'seed' => new external_value(PARAM_INT, 'Optional random seed', VALUE_DEFAULT, 0),
             'allow_partial' => new external_value(PARAM_BOOL, 'Create with fewer than count questions when necessary', VALUE_DEFAULT, false),
             'selection_mode' => new external_value(PARAM_ALPHANUMEXT, 'fixed or random_category', VALUE_DEFAULT, 'fixed'),
@@ -5832,7 +5951,9 @@ class local_aiagentapi_external extends external_api {
             $facts = self::practice_resource_map_facts((int)$course->id, (int)$params['cmid'], trim((string)$params['lesson_key']));
             $kgids = self::unique_string_list(array_merge($facts['kg_ids'], $params['kg_ids']));
             $qgids = self::unique_string_list(array_merge($facts['qg_ids'], $params['qg_ids']));
-            $tags = self::unique_string_list($params['tags']);
+            $requiredtags = self::unique_string_list($params['tags']);
+            $questiontagids = self::practice_question_tag_ids($requiredtags);
+            $tags = $requiredtags;
             $tags = self::unique_string_list(array_merge($tags, self::practice_standard_tags($kgids, $qgids)));
             if (empty($tags) && $targetcm) {
                 $tags = self::practice_title_tags((string)$targetcm->name);
@@ -5845,7 +5966,9 @@ class local_aiagentapi_external extends external_api {
                 $qgids,
                 $tags,
                 $count,
-                (int)$params['seed']
+                (int)$params['seed'],
+                $requiredtags,
+                $questiontagids
             );
             $payload = [
                 'courseid' => (int)$course->id,
@@ -5862,6 +5985,8 @@ class local_aiagentapi_external extends external_api {
                 'visible' => (bool)$params['visible'],
                 'questions' => $questions,
                 'resource_map' => $facts,
+                'tags' => $tags,
+                'tag_ids' => $questiontagids,
                 'available' => count($questions),
                 'requested' => $count,
             ];
@@ -5973,6 +6098,7 @@ class local_aiagentapi_external extends external_api {
                 }
                 $payload['random_categoryid'] = (int)$randomcategoryids[0];
                 $payload['random_categoryids'] = $randomcategoryids;
+                $payload['random_tagids'] = $questiontagids;
                 $quizstructure = \mod_quiz\quiz_settings::create((int)$quiz->id)->get_structure();
                 foreach ($categorycounts as $randomcategoryid => $slotcount) {
                     $filtercondition = [
@@ -5984,6 +6110,12 @@ class local_aiagentapi_external extends external_api {
                             ],
                         ],
                     ];
+                    if (!empty($questiontagids)) {
+                        $filtercondition['filter']['qtagids'] = [
+                            'jointype' => \core\output\datafilter::JOINTYPE_ALL,
+                            'values' => $questiontagids,
+                        ];
+                    }
                     $quizstructure->add_random_questions(0, (int)$slotcount, $filtercondition);
                 }
             }
@@ -6052,6 +6184,7 @@ class local_aiagentapi_external extends external_api {
                 'visible' => new external_value(PARAM_BOOL, 'Whether the created quiz is visible'),
                 'random_categoryid' => new external_value(PARAM_INT, 'Random question category id', VALUE_OPTIONAL),
                 'random_categoryids' => new external_multiple_structure(new external_value(PARAM_INT, 'Random question category id'), 'Random question category ids', VALUE_OPTIONAL),
+                'random_tagids' => new external_multiple_structure(new external_value(PARAM_INT, 'Random question tag id'), 'Random question tag ids', VALUE_OPTIONAL),
                 'questions' => new external_multiple_structure($questionstructure),
                 'resource_map' => new external_single_structure([
                     'kg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'KG id')),
@@ -6059,6 +6192,8 @@ class local_aiagentapi_external extends external_api {
                     'lesson_keys' => new external_multiple_structure(new external_value(PARAM_RAW, 'Lesson key')),
                     'resources' => new external_multiple_structure($resourcestructure),
                 ]),
+                'tags' => new external_multiple_structure(new external_value(PARAM_RAW, 'Resolved teaching/search tag'), 'Resolved teaching/search tags', VALUE_OPTIONAL),
+                'tag_ids' => new external_multiple_structure(new external_value(PARAM_INT, 'Resolved Moodle question tag id'), 'Resolved Moodle question tag ids', VALUE_OPTIONAL),
                 'available' => new external_value(PARAM_INT, 'Available question count for error responses', VALUE_OPTIONAL),
                 'requested' => new external_value(PARAM_INT, 'Requested question count for error responses', VALUE_OPTIONAL),
             ])

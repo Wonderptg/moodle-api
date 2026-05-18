@@ -2500,6 +2500,13 @@
           },
           "required": false
         },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "required": false
+        },
         "count": {
           "type": "integer",
           "minimum": 1,
