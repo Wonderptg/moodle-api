@@ -3681,6 +3681,26 @@ Common paths:
         "create-practice",
         description="Create an online Moodle practice quiz through local_aiagentapi WebService from existing mapped questions",
     )
+    quiz_create_practice.formatter_class = argparse.RawDescriptionHelpFormatter
+    quiz_create_practice.epilog = """
+Tag selection notes:
+  - Moodle category ids are question-bank locations. Use --category-id to point at the source category.
+  - Tags are the teaching filter. Prefer a large-chapter tag such as "第一章" for broad filtering,
+    then add a small-section tag such as "1.3" or "集合的基本运算" when you need a narrower pool.
+  - Always dry-run first and inspect returned questions[].categoryid / qtype / name before using --force.
+
+Typical mixed-category example:
+  moodle --profile dzexam --json --dry-run quiz create-practice \\
+    --idempotency-key preview-math-ch1-set \\
+    --course-id 116 \\
+    --category-id 619 \\
+    --category-id 616 \\
+    --tag "第一章" \\
+    --tag "1.3" \\
+    --count 30 \\
+    --random \\
+    --title "第一章 1.3 混合测试"
+"""
     quiz_create_practice.add_argument("--idempotency-key", required=True, help="Client idempotency key")
     quiz_create_practice.add_argument("--course-id", type=int, required=True, help="Target course id")
     quiz_create_practice.add_argument("--cmid", type=int, default=0, help="Optional lesson/resource cmid")
@@ -3688,10 +3708,10 @@ Common paths:
     quiz_create_practice.add_argument("--title", default="", help="Optional quiz title")
     quiz_create_practice.add_argument("--count", type=int, default=5, help="Number of questions to add (max 120)")
     quiz_create_practice.add_argument("--section", type=int, default=0, help="Course section number, 0 means infer/default")
-    quiz_create_practice.add_argument("--category-id", type=int, action="append", default=[], help="Optional question category id (repeatable)")
+    quiz_create_practice.add_argument("--category-id", type=int, action="append", default=[], help="Question-bank category id / source location (repeatable)")
     quiz_create_practice.add_argument("--kg-id", action="append", default=[], help="Additional KG id (repeatable)")
     quiz_create_practice.add_argument("--qg-id", action="append", default=[], help="Additional QG id (repeatable)")
-    quiz_create_practice.add_argument("--tag", action="append", default=[], help="Fallback text tag (repeatable)")
+    quiz_create_practice.add_argument("--tag", action="append", default=[], help="Teaching tag filter, e.g. large chapter '第一章' plus small section '1.3' (repeatable)")
     quiz_create_practice.add_argument("--seed", type=int, default=0, help="Optional random seed")
     quiz_create_practice.add_argument("--allow-partial", action="store_true", help="Create with fewer than count questions when necessary")
     quiz_create_practice.add_argument("--selection-mode", choices=["fixed", "random_category"], default="fixed", help="Question selection mode")

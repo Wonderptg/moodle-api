@@ -576,6 +576,12 @@ contain fewer questions than requested.
 If one qbank course stores related questions in several Moodle question categories, repeat
 `--category-id` to merge those categories into one quiz.
 
+`--category-id` is only the question-bank location. Use `--tag` for the teaching filter.
+For first-pass组卷, use a large chapter tag such as `第一章` to keep the pool broad, then add a
+small section tag such as `1.3` or `集合的基本运算` when you need the test to focus on one section.
+Always run `--dry-run` first and inspect `questions[].categoryid`, `qtype`, and `name` before
+creating the real quiz with `--force`.
+
 By default the quiz contains fixed question slots. Use `--random` or
 `--selection-mode random_category` to create Moodle native random slots from the selected question
 category. With repeated `--category-id`, random mode adds native random slots for each selected
@@ -612,6 +618,8 @@ bin/moodle --profile dzexam --json --dry-run --force \
   --course-id 116 \
   --category-id 619 \
   --category-id 616 \
+  --tag "第一章" \
+  --tag "1.3" \
   --count 30 \
   --random \
   --title "第一章混合题型测试"

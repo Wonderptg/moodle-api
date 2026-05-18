@@ -150,6 +150,28 @@ python3 scripts/moodle_cli.py --profile dzexam --json --force \
 
 Repeat `--category-id` when one qbank course stores the same chapter's questions in multiple Moodle question categories.
 
+Treat category ids as question-bank locations, not teaching intent. Use tags as the teaching filter:
+
+- Large chapter tags, for example `第一章`, are good for broad filtering.
+- Small section tags, for example `1.3` or `集合的基本运算`, narrow the pool.
+- Use both when possible, then inspect the dry-run `questions[].categoryid`, `qtype`, and `name`.
+
+Typical mixed-category preview:
+
+```bash
+python3 scripts/moodle_cli.py --profile dzexam --json --dry-run \
+  quiz create-practice \
+  --idempotency-key <stable-preview-key> \
+  --course-id 116 \
+  --category-id 619 \
+  --category-id 616 \
+  --tag "第一章" \
+  --tag "1.3" \
+  --count 30 \
+  --random \
+  --title "第一章 1.3 混合测试"
+```
+
 If this fails, check the WebService token user's Moodle permissions first. Do
 not switch to a `php scripts/*.php` path unless the task is explicit server
 maintenance.
