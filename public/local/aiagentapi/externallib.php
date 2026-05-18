@@ -2060,8 +2060,9 @@ class local_aiagentapi_external extends external_api {
                     ['name' => 'visible', 'type' => 'bool', 'required' => false, 'description' => 'Make the created quiz visible to students; default is hidden.'],
                     ['name' => 'dry_run', 'type' => 'bool', 'required' => false, 'description' => 'Validate and preview without writing.'],
                     ['name' => 'reason', 'type' => 'string', 'required' => false, 'description' => 'Optional audit reason.'],
+                    ['name' => 'category_specs', 'type' => 'array', 'required' => false, 'description' => 'Category quota specs such as 619:20. Overrides count when present.'],
                 ],
-                'data_fields' => ['quizid', 'quiz_cmid', 'url', 'selection_mode', 'visible', 'questions[]', 'resource_map', 'tags[]', 'tag_ids[]'],
+                'data_fields' => ['quizid', 'quiz_cmid', 'url', 'selection_mode', 'visible', 'questions[]', 'resource_map', 'tags[]', 'tag_ids[]', 'category_specs[]'],
                 'notes' => 'Uses Moodle native course, quiz, and question capabilities. Explicit tags such as 第一章 + 1.3 are strict teaching filters; random_category mode preserves resolved Moodle tag ids in random slots.',
             ],
             [
@@ -5926,6 +5927,41 @@ class local_aiagentapi_external extends external_api {
     }
 
     /**
+     * Parse category quota specs such as "619:20".
+     *
+     * @param array $specs
+     * @return array
+     */
+    private static function practice_category_specs(array $specs): array {
+        $parsed = [];
+        foreach ($specs as $spec) {
+            $text = trim((string)$spec);
+            if ($text === '') {
+                continue;
+            }
+            if (!preg_match('/^(\d+)\s*:\s*(\d+)$/', $text, $matches)) {
+                throw new \invalid_parameter_exception('category_specs must use categoryid:count, for example 619:20.');
+            }
+            $categoryid = (int)$matches[1];
+            $count = (int)$matches[2];
+            if ($categoryid <= 0 || $count <= 0) {
+                throw new \invalid_parameter_exception('category_specs category id and count must be positive.');
+            }
+            $parsed[$categoryid] = (int)($parsed[$categoryid] ?? 0) + $count;
+        }
+
+        $out = [];
+        foreach ($parsed as $categoryid => $count) {
+            $out[] = [
+                'categoryid' => (int)$categoryid,
+                'requested_count' => (int)$count,
+                'selected_count' => 0,
+            ];
+        }
+        return $out;
+    }
+
+    /**
      * Add names, aliases, and tags from standard KG/QG tables.
      *
      * @param array $kgids
@@ -6344,6 +6380,7 @@ class local_aiagentapi_external extends external_api {
             ],
             'tags' => [],
             'tag_ids' => [],
+            'category_specs' => [],
             'available' => 0,
             'requested' => (int)($params['count'] ?? 0),
         ];
@@ -6375,6 +6412,7 @@ class local_aiagentapi_external extends external_api {
             'dry_run' => new external_value(PARAM_BOOL, 'Preview only', VALUE_DEFAULT, false),
             'reason' => new external_value(PARAM_TEXT, 'Optional audit reason', VALUE_DEFAULT, ''),
             'categoryids' => new external_multiple_structure(new external_value(PARAM_INT, 'Question category id'), 'Extra question category ids', VALUE_DEFAULT, []),
+            'category_specs' => new external_multiple_structure(new external_value(PARAM_RAW, 'Category quota spec categoryid:count'), 'Category quota specs', VALUE_DEFAULT, []),
         ]);
     }
 
@@ -6402,7 +6440,8 @@ class local_aiagentapi_external extends external_api {
         bool $visible = false,
         bool $dry_run = false,
         string $reason = '',
-        array $categoryids = []
+        array $categoryids = [],
+        array $category_specs = []
     ): array {
         global $DB, $USER, $CFG;
 
@@ -6426,6 +6465,7 @@ class local_aiagentapi_external extends external_api {
             'dry_run' => $dry_run,
             'reason' => $reason,
             'categoryids' => $categoryids,
+            'category_specs' => $category_specs,
         ]);
 
         $action = 'practice_quiz_create_from_resource';
@@ -6440,6 +6480,15 @@ class local_aiagentapi_external extends external_api {
         try {
             self::restricted_context();
             $count = (int)$params['count'];
+            $categoryspecs = self::practice_category_specs((array)($params['category_specs'] ?? []));
+            if (!empty($categoryspecs)) {
+                $count = array_sum(array_map(static function(array $spec): int {
+                    return (int)$spec['requested_count'];
+                }, $categoryspecs));
+                $params['count'] = $count;
+                $errorpayload = self::empty_practice_quiz_payload($params);
+                $errorpayload['category_specs'] = $categoryspecs;
+            }
             if ($count < 1 || $count > self::MAX_PRACTICE_QUIZ_QUESTIONS) {
                 $response = self::response_error(
                     $auditid,
@@ -6462,6 +6511,11 @@ class local_aiagentapi_external extends external_api {
             )), static function($value): bool {
                 return $value > 0;
             })));
+            if (!empty($categoryspecs)) {
+                $questioncategoryids = array_map(static function(array $spec): int {
+                    return (int)$spec['categoryid'];
+                }, $categoryspecs);
+            }
 
             $course = $DB->get_record('course', ['id' => (int)$params['courseid']], '*', MUST_EXIST);
             $coursecontext = \context_course::instance((int)$course->id);
@@ -6512,17 +6566,46 @@ class local_aiagentapi_external extends external_api {
                 return $response;
             }
 
-            $questions = self::practice_pick_questions(
-                $course,
-                $questioncategoryids,
-                $kgids,
-                $qgids,
-                $tags,
-                $count,
-                (int)$params['seed'],
-                $requiredtags,
-                $questiontagids
-            );
+            if (!empty($categoryspecs)) {
+                $questions = [];
+                $seenquestionids = [];
+                foreach ($categoryspecs as $index => $spec) {
+                    $quotaquestions = self::practice_pick_questions(
+                        $course,
+                        [(int)$spec['categoryid']],
+                        $kgids,
+                        $qgids,
+                        $tags,
+                        (int)$spec['requested_count'],
+                        (int)$params['seed'] + $index,
+                        $requiredtags,
+                        $questiontagids
+                    );
+                    $selectedcount = 0;
+                    foreach ($quotaquestions as $question) {
+                        $questionid = (int)$question['id'];
+                        if (isset($seenquestionids[$questionid])) {
+                            continue;
+                        }
+                        $seenquestionids[$questionid] = true;
+                        $questions[] = $question;
+                        $selectedcount++;
+                    }
+                    $categoryspecs[$index]['selected_count'] = $selectedcount;
+                }
+            } else {
+                $questions = self::practice_pick_questions(
+                    $course,
+                    $questioncategoryids,
+                    $kgids,
+                    $qgids,
+                    $tags,
+                    $count,
+                    (int)$params['seed'],
+                    $requiredtags,
+                    $questiontagids
+                );
+            }
             $payload = [
                 'courseid' => (int)$course->id,
                 'cmid' => (int)$params['cmid'],
@@ -6540,6 +6623,7 @@ class local_aiagentapi_external extends external_api {
                 'resource_map' => $facts,
                 'tags' => $tags,
                 'tag_ids' => $questiontagids,
+                'category_specs' => $categoryspecs,
                 'available' => count($questions),
                 'requested' => $count,
             ];
@@ -6721,6 +6805,11 @@ class local_aiagentapi_external extends external_api {
             'qg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'QG id')),
             'review_status' => new external_value(PARAM_RAW, 'Review status'),
         ]);
+        $categoryspecstructure = new external_single_structure([
+            'categoryid' => new external_value(PARAM_INT, 'Question category id'),
+            'requested_count' => new external_value(PARAM_INT, 'Requested count for this category'),
+            'selected_count' => new external_value(PARAM_INT, 'Selected count for this category'),
+        ]);
         return self::envelope_returns(
             new external_single_structure([
                 'courseid' => new external_value(PARAM_INT, 'Course id'),
@@ -6747,6 +6836,7 @@ class local_aiagentapi_external extends external_api {
                 ]),
                 'tags' => new external_multiple_structure(new external_value(PARAM_RAW, 'Resolved teaching/search tag'), 'Resolved teaching/search tags', VALUE_OPTIONAL),
                 'tag_ids' => new external_multiple_structure(new external_value(PARAM_INT, 'Resolved Moodle question tag id'), 'Resolved Moodle question tag ids', VALUE_OPTIONAL),
+                'category_specs' => new external_multiple_structure($categoryspecstructure, 'Category quota specs', VALUE_OPTIONAL),
                 'available' => new external_value(PARAM_INT, 'Available question count for error responses', VALUE_OPTIONAL),
                 'requested' => new external_value(PARAM_INT, 'Requested question count for error responses', VALUE_OPTIONAL),
             ])

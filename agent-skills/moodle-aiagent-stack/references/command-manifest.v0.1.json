@@ -1326,6 +1326,7 @@
           "count": "--count",
           "section": "--section",
           "categoryIds": "--category-id",
+          "categorySpecs": "--category-spec",
           "kgIds": "--kg-id",
           "qgIds": "--qg-id",
           "tags": "--tag",
@@ -1396,6 +1397,16 @@
           "required": false,
           "api": "categoryids",
           "description": "Repeatable Moodle question category ids. Category ids are source locations; use tags to express teaching scope.",
+          "repeatableCli": true
+        },
+        "categorySpecs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "required": false,
+          "api": "category_specs",
+          "description": "Repeatable category quota specs in categoryid:count form, for example 619:20. Overrides count when present.",
           "repeatableCli": true
         },
         "kgIds": {
@@ -1482,10 +1493,12 @@
       },
       "examples": [
         "python3 scripts/moodle_cli.py --profile dzexam --json --dry-run quiz create-practice --idempotency-key <key> --course-id 116 --category-id 619 --category-id 616 --tag \"第一章\" --tag \"1.3\" --count 30 --random",
-        "python3 scripts/moodle_cli.py --profile dzexam --json --dry-run quiz create-practice --idempotency-key <key> --course-id 116 --category-id 619 --tag-id 123 --count 10 --random"
+        "python3 scripts/moodle_cli.py --profile dzexam --json --dry-run quiz create-practice --idempotency-key <key> --course-id 116 --category-id 619 --tag-id 123 --count 10 --random",
+        "python3 scripts/moodle_cli.py --profile dzexam --json --dry-run quiz create-practice --idempotency-key <key> --course-id 116 --category-spec 619:20 --category-spec 616:10 --tag-id 123 --random"
       ],
       "repairHints": [
         "For mixed-category quiz creation, treat category ids as source locations and tags as the teaching filter.",
+        "Use categorySpecs when the user needs explicit per-category counts in one quiz.",
         "Use questionbank.tags to discover Moodle tag ids when random mode must preserve tag filters.",
         "Use a broad chapter tag such as 第一章 first, add a small-section tag such as 1.3 when needed, then inspect dry-run questions[].categoryid, qtype, and name.",
         "If creation fails with permission errors, check local/aiagentapi:use and quiz/question bank capabilities.",

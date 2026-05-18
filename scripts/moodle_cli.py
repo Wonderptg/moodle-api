@@ -2428,6 +2428,7 @@ def command_quiz_create_practice(cli: "MoodleCLI", args: argparse.Namespace) -> 
         "visible": args.visible,
         "dry_run": args.dry_run,
         "reason": args.reason,
+        "category_specs": args.category_spec or [],
     }
     if len(category_ids) > 1:
         payload["categoryids"] = category_ids
@@ -3774,6 +3775,7 @@ Typical mixed-category example:
     quiz_create_practice.add_argument("--count", type=int, default=5, help="Number of questions to add (max 120)")
     quiz_create_practice.add_argument("--section", type=int, default=0, help="Course section number, 0 means infer/default")
     quiz_create_practice.add_argument("--category-id", type=int, action="append", default=[], help="Question-bank category id / source location (repeatable)")
+    quiz_create_practice.add_argument("--category-spec", action="append", default=[], help="Category quota spec categoryid:count, e.g. 619:20 (repeatable; overrides --count)")
     quiz_create_practice.add_argument("--kg-id", action="append", default=[], help="Additional KG id (repeatable)")
     quiz_create_practice.add_argument("--qg-id", action="append", default=[], help="Additional QG id (repeatable)")
     quiz_create_practice.add_argument("--tag", action="append", default=[], help="Teaching tag filter, e.g. large chapter '第一章' plus small section '1.3' (repeatable)")
