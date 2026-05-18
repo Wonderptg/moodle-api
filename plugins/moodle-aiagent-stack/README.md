@@ -82,6 +82,42 @@ Routing rule:
 - Use `moodle_doctor` after a failed call.
 - Use `moodle_api` only as an advanced escape hatch.
 
+## After Install: Auth First
+
+Another AI should not guess credentials, tokens, or env files. Login state lives
+in the Moodle CLI profile store, usually `~/.config/moodle-cli/config.json`,
+with tokens stored in the macOS Keychain when available.
+
+First inspect existing profiles:
+
+```json
+{ "tool": "moodle_auth", "arguments": { "action": "list_profiles" } }
+```
+
+Then verify the current or chosen profile:
+
+```json
+{ "tool": "moodle_auth", "arguments": { "action": "status" } }
+```
+
+For this local workspace, the expected production profile is usually
+`dzexam`:
+
+```json
+{ "tool": "moodle_auth", "arguments": { "action": "status", "name": "dzexam" } }
+```
+
+Only when no usable profile exists, create one and start device login:
+
+```json
+{ "tool": "moodle_auth", "arguments": { "action": "setup", "name": "dzexam", "baseUrl": "https://dzexam.cn" } }
+{ "tool": "moodle_auth", "arguments": { "action": "login_start", "name": "dzexam", "noWait": true } }
+```
+
+In a headless AI session, return the `verification_url` and `user_code` from
+`login_start` to the user. Do not ask the user for a Moodle password unless the
+task explicitly requires username/password login.
+
 ## Safety Rules
 
 - The tools never accept arbitrary shell strings.

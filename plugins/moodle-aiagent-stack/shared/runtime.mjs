@@ -49,9 +49,9 @@ export const TOOL_ACTIONS = {
 
 export const TOOL_DESCRIPTIONS = {
   moodle_catalog:
-    "Search and inspect the local Moodle command manifest. Start here when the right Moodle action or parameters are unclear. Read-only and performs no Moodle network I/O.",
+    "Search and inspect the local Moodle command manifest. Use moodle_auth first after install; use this when the right Moodle action or parameters are unclear. Read-only and performs no Moodle network I/O.",
   moodle_auth:
-    "Manage local Moodle CLI profiles and login state through structured CLI actions. Local write actions such as logout/use_profile require confirm=true.",
+    "Start here after install. Check existing CLI login state with list_profiles then status; if no usable profile exists, run setup then login_start. Local write actions such as logout/use_profile require confirm=true.",
   moodle_doctor:
     "Diagnose Moodle CLI config, token, service, capability, and connectivity problems. Use explain_error after a failed Moodle tool call.",
   moodle_course:

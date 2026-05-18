@@ -41,6 +41,30 @@ OpenClaw loads these tools through `openclaw.plugin.json` and `index.ts`.
 Codex loads the same tool surface through `.codex-plugin/plugin.json`,
 `.mcp.json`, and `scripts/moodle-mcp-server.mjs`.
 
+After installing the plugin, check login before doing Moodle work:
+
+```json
+{ "tool": "moodle_auth", "arguments": { "action": "list_profiles" } }
+{ "tool": "moodle_auth", "arguments": { "action": "status" } }
+```
+
+For this local workspace, prefer the existing `dzexam` profile when it exists:
+
+```json
+{ "tool": "moodle_auth", "arguments": { "action": "status", "name": "dzexam" } }
+```
+
+If no profile exists or the token is invalid, create or repair the profile with
+`moodle_auth` instead of asking for secrets:
+
+```json
+{ "tool": "moodle_auth", "arguments": { "action": "setup", "name": "dzexam", "baseUrl": "https://dzexam.cn" } }
+{ "tool": "moodle_auth", "arguments": { "action": "login_start", "name": "dzexam", "noWait": true } }
+```
+
+In a headless session, return the `verification_url` and `user_code` from
+`login_start` to the user.
+
 Start with `moodle_catalog` when the right action or parameter names are
 unclear:
 
@@ -90,27 +114,34 @@ Use `.env.local` only when the goal is seeded deterministic regression on the lo
 ## First-time login
 
 If a command fails with a missing token or missing base URL, do not keep guessing
-env files. Set up and verify a profile first:
+env files. First check whether a profile already exists:
 
 ```bash
-python3 scripts/moodle_cli.py setup --name prod --base-url https://dzexam.cn
-python3 scripts/moodle_cli.py login --name prod
-python3 scripts/moodle_cli.py status --name prod
+python3 scripts/moodle_cli.py --json profile list
+python3 scripts/moodle_cli.py --profile dzexam --json status
+```
+
+If no usable profile exists, set up and verify one:
+
+```bash
+python3 scripts/moodle_cli.py setup --name dzexam --base-url https://dzexam.cn
+python3 scripts/moodle_cli.py login --name dzexam
+python3 scripts/moodle_cli.py status --name dzexam
 ```
 
 For headless agent sessions, start login without waiting and give the returned
 `verification_url` to the user:
 
 ```bash
-python3 scripts/moodle_cli.py --json login --name prod --no-wait
+python3 scripts/moodle_cli.py --json login --name dzexam --no-wait
 ```
 
 The old explicit commands still work:
 
 ```bash
-python3 scripts/moodle_cli.py config init --name prod --base-url https://dzexam.cn --activate
-python3 scripts/moodle_cli.py auth login --name prod
-python3 scripts/moodle_cli.py auth status --name prod
+python3 scripts/moodle_cli.py config init --name dzexam --base-url https://dzexam.cn --activate
+python3 scripts/moodle_cli.py auth login --name dzexam
+python3 scripts/moodle_cli.py auth status --name dzexam
 ```
 
 ## Canonical workflow
