@@ -32,6 +32,9 @@ Codex adapter
 
 Human/AI operating guide
   skills/moodle-aiagent-cli/SKILL.md
+
+Concrete usage recipes
+  USE_CASES.md
 ```
 
 ## Mental Model
@@ -54,9 +57,10 @@ arguments.
 ## What To Read First
 
 1. `README.md`: package layout and development rules.
-2. `skills/moodle-aiagent-cli/SKILL.md`: how an AI should use the tools.
-3. `skills/moodle-aiagent-cli/references/command-manifest.v0.1.json`: tool/action/CLI/API mapping.
-4. `docs/moodle-openclaw-codex-dual-plugin-2026-05-18.md`: short ADR for why OpenClaw and Codex need separate entrypoints.
+2. `USE_CASES.md`: concrete workflows that another AI can follow.
+3. `skills/moodle-aiagent-cli/SKILL.md`: how an AI should use the tools.
+4. `skills/moodle-aiagent-cli/references/command-manifest.v0.1.json`: tool/action/CLI/API mapping.
+5. `docs/moodle-openclaw-codex-dual-plugin-2026-05-18.md`: short ADR for why OpenClaw and Codex need separate entrypoints.
 
 ## Tool Surface
 
