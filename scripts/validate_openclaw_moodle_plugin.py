@@ -21,6 +21,7 @@ PLUGIN_DIR = ROOT / "plugins" / "moodle-aiagent-stack"
 PLUGIN_MANIFEST = PLUGIN_DIR / "openclaw.plugin.json"
 PLUGIN_PACKAGE = PLUGIN_DIR / "package.json"
 PLUGIN_SOURCE = PLUGIN_DIR / "index.ts"
+PLUGIN_RUNTIME = PLUGIN_DIR / "shared" / "runtime.mjs"
 COMMAND_MANIFEST = (
     ROOT
     / "agent-skills"
@@ -69,12 +70,24 @@ def duplicates(values: list[str]) -> list[str]:
     return sorted(dupes)
 
 
+def runtime_tool_actions(source: str) -> dict[str, set[str]]:
+    match = re.search(r"export\s+const\s+TOOL_ACTIONS\s*=\s*\{(?P<body>.*?)\n\};", source, re.S)
+    if not match:
+        return {}
+    body = match.group("body")
+    actions: dict[str, set[str]] = {}
+    for tool, values in re.findall(r"(moodle_[A-Za-z0-9_]+)\s*:\s*\[(.*?)\]", body, re.S):
+        actions[tool] = set(re.findall(r'"([^"]+)"', values))
+    return actions
+
+
 def validate() -> list[str]:
     errors: list[str] = []
 
     plugin = load_json(PLUGIN_MANIFEST)
     package = load_json(PLUGIN_PACKAGE)
     source = PLUGIN_SOURCE.read_text(encoding="utf-8")
+    runtime_source = PLUGIN_RUNTIME.read_text(encoding="utf-8")
     command_manifest = load_json(COMMAND_MANIFEST)
 
     package_openclaw = package.get("openclaw")
@@ -159,6 +172,18 @@ def validate() -> list[str]:
             required_config = command.get("requiresPluginConfig")
             if not isinstance(required_config, dict) or required_config.get("allowDestructive") is not True:
                 errors.append(f"destructive command {label} must require allowDestructive=true")
+
+    tool_actions = runtime_tool_actions(runtime_source)
+    if not tool_actions:
+        errors.append("shared runtime must export parseable TOOL_ACTIONS")
+    else:
+        for command in commands:
+            tool = str(command.get("tool") or "")
+            action = str(command.get("action") or "")
+            if tool == "moodle_catalog":
+                continue
+            if tool in tool_names and action and action not in tool_actions.get(tool, set()):
+                errors.append(f"command {command.get('id')} action {action!r} missing from shared TOOL_ACTIONS.{tool}")
 
     for function in functions:
         function_id = str(function.get("id") or "")

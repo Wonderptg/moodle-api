@@ -55,9 +55,9 @@
       "id": "questionbank",
       "tool": "moodle_questionbank",
       "skill": "moodle-questionbank",
-      "description": "Read Moodle question categories, search questions, pick random questions, and render question HTML.",
+      "description": "Read Moodle question categories, search questions, indexed tags, pick random questions, and render question HTML.",
       "defaultVisible": false,
-      "riskMax": "read"
+      "riskMax": "local_write"
     },
     {
       "id": "quiz",
@@ -913,7 +913,7 @@
       "tool": "moodle_questionbank",
       "action": "tags_sync",
       "layer": "api",
-      "risk": "read",
+      "risk": "local_write",
       "cli": {
         "path": [
           "questions",

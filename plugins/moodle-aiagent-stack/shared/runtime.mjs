@@ -28,7 +28,7 @@ export const TOOL_ACTIONS = {
     "progress",
     "notifications",
   ],
-  moodle_questionbank: ["categories", "search", "pick_random", "render_html"],
+  moodle_questionbank: ["categories", "search", "tags", "tags_sync", "pick_random", "render_html"],
   moodle_quiz: [
     "list",
     "create_practice",
@@ -57,7 +57,7 @@ export const TOOL_DESCRIPTIONS = {
   moodle_course:
     "Read Moodle course, activity, resource, grade, progress, notification, and due-work data through structured CLI actions. Read-only.",
   moodle_questionbank:
-    "Read Moodle question-bank categories, search questions, pick random questions, and render question HTML. Read-only.",
+    "Read Moodle question-bank categories, search questions, indexed tags, pick random questions, and render question HTML. tags_sync rebuilds the local tag index but does not change Moodle question tags.",
   moodle_quiz:
     "Read Moodle quizzes and attempts, resolve random questions, and perform guarded quiz writes. Writes default to dryRun=true and require confirm=true plus idempotencyKey when dryRun=false.",
   moodle_calendar:
