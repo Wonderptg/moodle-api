@@ -1,0 +1,146 @@
+{
+  "id": "moodle-aiagent-stack",
+  "name": "Moodle AI Agent Stack",
+  "description": "OpenClaw tool surface for the local Moodle local_aiagentapi stack.",
+  "activation": {
+    "onStartup": false,
+    "onCommands": [
+      "moodle"
+    ]
+  },
+  "contracts": {
+    "tools": [
+      "moodle_catalog",
+      "moodle_auth",
+      "moodle_doctor",
+      "moodle_course",
+      "moodle_questionbank",
+      "moodle_quiz",
+      "moodle_calendar",
+      "moodle_assignment",
+      "moodle_forum",
+      "moodle_api"
+    ]
+  },
+  "toolMetadata": {
+    "moodle_api": {
+      "optional": true
+    }
+  },
+  "skills": [
+    "./skills"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "manifestPath": {
+        "type": "string",
+        "default": "skills/moodle-aiagent-cli/references/command-manifest.v0.1.json",
+        "description": "Path to the Moodle command manifest. Relative paths are resolved from the plugin root."
+      },
+      "maxSearchResults": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 20,
+        "description": "Maximum results returned by moodle_catalog search."
+      },
+      "repoRoot": {
+        "type": "string",
+        "default": "../..",
+        "description": "Path to the Moodle repository root. Relative paths are resolved from the plugin root."
+      },
+      "pythonBin": {
+        "type": "string",
+        "default": "python3",
+        "description": "Python executable used to run scripts/moodle_cli.py."
+      },
+      "cliPath": {
+        "type": "string",
+        "default": "scripts/moodle_cli.py",
+        "description": "Path to the Moodle CLI script. Relative paths are resolved from repoRoot."
+      },
+      "commandTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 300000,
+        "default": 60000,
+        "description": "Timeout for Moodle CLI invocations."
+      },
+      "defaultWriteDryRun": {
+        "type": "boolean",
+        "default": true,
+        "description": "Default write-capable Moodle tools to dry-run previews unless callers set dryRun=false and confirm=true."
+      },
+      "allowDestructive": {
+        "type": "boolean",
+        "default": false,
+        "description": "Allow destructive Moodle actions, currently forum delete, when callers also set dryRun=false and confirm=true."
+      },
+      "enableApiTool": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable moodle_api.call for manifest-listed local_aiagentapi functions."
+      },
+      "allowApiWrites": {
+        "type": "boolean",
+        "default": false,
+        "description": "Allow moodle_api.call to invoke write-capable manifest functions when normal write gates also pass."
+      },
+      "allowedApiFunctions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Optional allowlist for moodle_api.call. When empty, only manifest functions with allowedByDefault=true can be called."
+      }
+    }
+  },
+  "uiHints": {
+    "manifestPath": {
+      "label": "Command Manifest Path",
+      "advanced": true
+    },
+    "maxSearchResults": {
+      "label": "Max Catalog Search Results"
+    },
+    "repoRoot": {
+      "label": "Moodle Repository Root",
+      "advanced": true
+    },
+    "pythonBin": {
+      "label": "Python Binary",
+      "advanced": true
+    },
+    "cliPath": {
+      "label": "Moodle CLI Path",
+      "advanced": true
+    },
+    "commandTimeoutMs": {
+      "label": "Command Timeout (ms)",
+      "advanced": true
+    },
+    "defaultWriteDryRun": {
+      "label": "Default Write Dry Run",
+      "advanced": true
+    },
+    "allowDestructive": {
+      "label": "Allow Destructive Actions",
+      "advanced": true
+    },
+    "enableApiTool": {
+      "label": "Enable API Tool",
+      "advanced": true
+    },
+    "allowApiWrites": {
+      "label": "Allow API Writes",
+      "advanced": true
+    },
+    "allowedApiFunctions": {
+      "label": "Allowed API Functions",
+      "advanced": true
+    }
+  }
+}

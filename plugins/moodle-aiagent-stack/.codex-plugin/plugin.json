@@ -1,0 +1,45 @@
+{
+  "name": "moodle-aiagent-stack",
+  "version": "0.1.0",
+  "description": "Codex and OpenClaw tool surface for the local Moodle local_aiagentapi stack.",
+  "author": {
+    "name": "Wonder",
+    "email": "support@example.com",
+    "url": "https://github.com/Wonderptg"
+  },
+  "homepage": "https://github.com/Wonderptg/moodle-api",
+  "repository": "https://github.com/Wonderptg/moodle-api",
+  "license": "MIT",
+  "keywords": [
+    "moodle",
+    "education",
+    "openclaw",
+    "codex",
+    "mcp",
+    "quiz",
+    "course"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Moodle AI Agent Stack",
+    "shortDescription": "Use Moodle courses, quizzes, assignments, and forums from Codex",
+    "longDescription": "Expose the local Moodle local_aiagentapi stack to Codex through a manifest-driven MCP adapter. The plugin keeps Moodle business logic in Moodle, calls scripts/moodle_cli.py with structured argv, and preserves dry-run, confirmation, idempotency, and destructive-action gates.",
+    "developerName": "Wonder",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/Wonderptg/moodle-api",
+    "privacyPolicyURL": "https://github.com/Wonderptg/moodle-api",
+    "termsOfServiceURL": "https://github.com/Wonderptg/moodle-api",
+    "defaultPrompt": [
+      "Check my Moodle course context and due work.",
+      "Find Moodle quiz question categories for a course.",
+      "Create a dry-run Moodle practice quiz."
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
+}

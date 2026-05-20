@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 CANONICAL_SKILL = ROOT / "agent-skills" / "moodle-aiagent-stack" / "SKILL.md"
-CANONICAL_REF = ROOT / "agent-skills" / "moodle-aiagent-stack" / "references" / "capabilities.md"
+CANONICAL_REF_DIR = ROOT / "agent-skills" / "moodle-aiagent-stack" / "references"
+CANONICAL_REF = CANONICAL_REF_DIR / "capabilities.md"
 MOODLE_CLI = ROOT / "scripts" / "moodle_cli.py"
 
 
@@ -34,7 +35,7 @@ ADAPTERS = [
         name="moodle-aiagent-cli",
         description=(
             "Use when working with the local Moodle AI agent stack in this repository: "
-            "reading or writing Moodle data through the AI-friendly API, using the project CLI, "
+            "reading or writing Moodle data through the remote WebService CLI, "
             "seeding demo data, running live regression, or extending `local_aiagentapi`. Trigger "
             "for tasks involving courses, calendar plans, assignments, forums, quizzes, question "
             "banks, or Moodle automation in this repo."
@@ -54,26 +55,26 @@ ADAPTERS = [
         name="moodle-aiagent-cli",
         description=(
             "Use when working with the local Moodle AI agent stack in this repository: "
-            "reading or writing Moodle data through the AI-friendly API, using the project CLI, "
+            "reading or writing Moodle data through the remote WebService CLI, "
             "seeding demo data, running live regression, or extending `local_aiagentapi`. Trigger "
             "for tasks involving courses, calendar plans, assignments, forums, quizzes, question "
             "banks, or Moodle automation in this repo."
         ),
         title="Moodle AI Agent CLI",
-        adapter_note="This is a Claude Code plugin adapter for the canonical generic skill.",
+        adapter_note="This is a plugin adapter for the canonical generic skill.",
     ),
     AdapterSpec(
         path=ROOT / "skills" / "moodle-aiagent-cli" / "SKILL.md",
         reference_path=ROOT / "skills" / "moodle-aiagent-cli" / "references" / "capabilities.md",
         name="moodle-aiagent-cli",
         description=(
-            "Use this skill for the Moodle AI agent stack in this repository. It covers local Moodle "
-            "reads and writes through the project CLI, seeded regression, quiz attempts, question-bank "
+            "Use this skill for the Moodle AI agent stack in this repository. It covers Moodle "
+            "reads and writes through the remote WebService CLI, seeded regression, quiz attempts, question-bank "
             "actions, calendar plans, assignments, forums, and extending `local_aiagentapi`."
         ),
         title="Moodle AI Agent CLI",
         adapter_note="This is an OpenClaw-oriented adapter for the canonical generic skill.",
-        metadata='metadata:\n  {\n    "openclaw":\n      {\n        "requires": { "bins": ["python3", "php"] }\n      }\n  }',
+        metadata='metadata: {"openclaw":{"requires":{"bins":["python3"]}}}',
     ),
 ]
 
@@ -102,7 +103,7 @@ def build_frontmatter(spec: AdapterSpec) -> str:
     lines = [
         "---",
         f"name: {spec.name}",
-        f"description: {spec.description}",
+        f"description: {json.dumps(spec.description, ensure_ascii=False)}",
     ]
     if spec.metadata:
         lines.append(spec.metadata)
@@ -122,6 +123,15 @@ def build_adapter_markdown(spec: AdapterSpec, canonical_body: str) -> str:
 def build_reference_markdown(canonical_reference: str) -> str:
     header = "<!-- Generated from agent-skills/moodle-aiagent-stack/references/capabilities.md by scripts/sync_agent_skills.py -->\n\n"
     return header + canonical_reference.lstrip()
+
+
+def sync_reference_assets(target_dir: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source_path in sorted(CANONICAL_REF_DIR.iterdir()):
+        if not source_path.is_file() or source_path.name == CANONICAL_REF.name:
+            continue
+        target_path = target_dir / source_path.name
+        target_path.write_bytes(source_path.read_bytes())
 
 
 def schema() -> Dict[str, Any]:
@@ -226,9 +236,19 @@ def generate_canonical_reference() -> str:
         "## Current architecture",
         "",
         "- Backend source of truth: `public/local/aiagentapi`",
-        "- Agent-facing CLI: `scripts/moodle_cli.py`",
+        "- Agent-facing remote WebService CLI: `scripts/moodle_cli.py`",
+        "- WebService endpoint: `<base-url>/webservice/rest/server.php`",
+        "- Moodle PHP maintenance scripts: `scripts/*.php` and `admin/cli/*.php`",
         "- Seed fixtures: `scripts/seed_moodle_test_data.php`",
         "- Live regression: `scripts/test_moodle_live_cli.py`",
+        "",
+        "## Tool boundary",
+        "",
+        "- Use `python3 scripts/moodle_cli.py ...` for normal agent operations, including online quiz creation.",
+        "- This remote CLI needs Python plus a Moodle base URL and WebService token/profile.",
+        "- The remote CLI does not need local PHP, `public/config.php`, or the Moodle server code directory.",
+        "- Use PHP scripts only for Moodle internal maintenance such as plugin upgrade, service registration, data imports, or seeding.",
+        "- PHP scripts must run in a Moodle code tree with PHP and `config.php`.",
         "",
         "## Root contract",
         "",
@@ -237,6 +257,7 @@ def generate_canonical_reference() -> str:
         "- `catalog get` and `context get` are the preferred first calls for discovery.",
         "- First-time login should use `setup --name <profile> --base-url <url>`, then `login --name <profile>`, then `status --name <profile>`.",
         "- In headless agent sessions, use `login --name <profile> --no-wait` and return the `verification_url` to the user.",
+        "- OpenClaw tool/action routing should use `references/command-manifest.v0.1.json` as the source of truth.",
         "",
         "## Generated command inventory",
         "",
@@ -287,6 +308,7 @@ def main() -> int:
     for spec in ADAPTERS:
         write_text(spec.path, build_adapter_markdown(spec, canonical_body))
         write_text(spec.reference_path, build_reference_markdown(canonical_reference))
+        sync_reference_assets(spec.reference_path.parent)
 
     print("Generated canonical Moodle skill reference and synced Claude/OpenClaw adapters.")
     return 0

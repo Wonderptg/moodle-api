@@ -1,0 +1,2773 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": null,
+  "source": "manual-v0.1",
+  "cli": {
+    "program": "python3 scripts/moodle_cli.py",
+    "defaultOutput": "json"
+  },
+  "riskLevels": [
+    "read",
+    "local_write",
+    "write",
+    "high_write",
+    "destructive"
+  ],
+  "layers": [
+    "shortcut",
+    "api",
+    "raw"
+  ],
+  "domains": [
+    {
+      "id": "catalog",
+      "tool": "moodle_catalog",
+      "skill": "moodle-core",
+      "description": "Search and inspect Moodle command/API manifest entries.",
+      "defaultVisible": true,
+      "riskMax": "read"
+    },
+    {
+      "id": "auth",
+      "tool": "moodle_auth",
+      "skill": "moodle-auth",
+      "description": "Profile setup, device-flow login, auth status, and logout.",
+      "defaultVisible": true,
+      "riskMax": "local_write"
+    },
+    {
+      "id": "doctor",
+      "tool": "moodle_doctor",
+      "skill": "moodle-auth",
+      "description": "Diagnose config, token, service, and Moodle capability problems.",
+      "defaultVisible": true,
+      "riskMax": "read"
+    },
+    {
+      "id": "course",
+      "tool": "moodle_course",
+      "skill": "moodle-course",
+      "description": "Read courses, activities, resources, grades, progress, and notifications.",
+      "defaultVisible": false,
+      "riskMax": "read"
+    },
+    {
+      "id": "questionbank",
+      "tool": "moodle_questionbank",
+      "skill": "moodle-questionbank",
+      "description": "Read Moodle question categories, search questions, pick random questions, and render question HTML.",
+      "defaultVisible": false,
+      "riskMax": "read"
+    },
+    {
+      "id": "quiz",
+      "tool": "moodle_quiz",
+      "skill": "moodle-quiz",
+      "description": "Quiz listing, native practice quiz creation, attempt lifecycle, and structured answering.",
+      "defaultVisible": false,
+      "riskMax": "write"
+    },
+    {
+      "id": "calendar",
+      "tool": "moodle_calendar",
+      "skill": "moodle-calendar",
+      "description": "List Moodle calendar events and publish/upsert study plan events.",
+      "defaultVisible": false,
+      "riskMax": "write"
+    },
+    {
+      "id": "assignment",
+      "tool": "moodle_assignment",
+      "skill": "moodle-assignment",
+      "description": "Read assignment status, save drafts, and submit final work.",
+      "defaultVisible": false,
+      "riskMax": "high_write"
+    },
+    {
+      "id": "forum",
+      "tool": "moodle_forum",
+      "skill": "moodle-forum",
+      "description": "Read discussions and create/reply/update/delete forum posts.",
+      "defaultVisible": false,
+      "riskMax": "destructive"
+    }
+  ],
+  "commands": [
+    {
+      "id": "catalog.get",
+      "domain": "catalog",
+      "tool": "moodle_catalog",
+      "action": "get",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "catalog",
+          "get"
+        ],
+        "argv": {}
+      },
+      "webservice": "local_aiagentapi_get_api_catalog",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {},
+      "examples": [
+        "python3 scripts/moodle_cli.py --json catalog get"
+      ],
+      "repairHints": [
+        "If the catalog call fails, run doctor.check and auth.status."
+      ]
+    },
+    {
+      "id": "auth.setup",
+      "domain": "auth",
+      "tool": "moodle_auth",
+      "action": "setup",
+      "layer": "shortcut",
+      "risk": "local_write",
+      "cli": {
+        "path": [
+          "setup"
+        ],
+        "argv": {
+          "name": "--name",
+          "baseUrl": "--base-url",
+          "service": "--service"
+        }
+      },
+      "webservice": null,
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "CLI profile name."
+        },
+        "baseUrl": {
+          "type": "string",
+          "required": true,
+          "description": "Moodle base URL."
+        },
+        "service": {
+          "type": "string",
+          "required": false,
+          "default": "local_aiagentapi",
+          "description": "Moodle external service shortname."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py setup --name prod --base-url https://example.edu"
+      ],
+      "repairHints": [
+        "Run auth.login_start after setup to obtain a token."
+      ]
+    },
+    {
+      "id": "auth.login_start",
+      "domain": "auth",
+      "tool": "moodle_auth",
+      "action": "login_start",
+      "layer": "shortcut",
+      "risk": "local_write",
+      "cli": {
+        "path": [
+          "login"
+        ],
+        "argv": {
+          "name": "--name",
+          "noWait": "--no-wait"
+        }
+      },
+      "webservice": null,
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "CLI profile name."
+        },
+        "noWait": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "description": "Return a verification URL instead of waiting interactively."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json login --name prod --no-wait"
+      ],
+      "repairHints": [
+        "Give the returned verification_url and user_code to the user in headless sessions."
+      ]
+    },
+    {
+      "id": "auth.status",
+      "domain": "auth",
+      "tool": "moodle_auth",
+      "action": "status",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "status"
+        ],
+        "argv": {
+          "name": "--name"
+        }
+      },
+      "webservice": "local_aiagentapi_get_user_context",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "CLI profile name."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json status --name prod"
+      ],
+      "repairHints": [
+        "If token is missing or invalid, run auth.login_start."
+      ]
+    },
+    {
+      "id": "auth.list_profiles",
+      "domain": "auth",
+      "tool": "moodle_auth",
+      "action": "list_profiles",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "profile",
+          "list"
+        ],
+        "argv": {}
+      },
+      "webservice": null,
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {},
+      "examples": [
+        "python3 scripts/moodle_cli.py --json profile list"
+      ],
+      "repairHints": [
+        "If no profiles exist, run auth.setup first."
+      ]
+    },
+    {
+      "id": "auth.use_profile",
+      "domain": "auth",
+      "tool": "moodle_auth",
+      "action": "use_profile",
+      "layer": "shortcut",
+      "risk": "local_write",
+      "cli": {
+        "path": [
+          "profile",
+          "use"
+        ],
+        "argv": {
+          "name": "profile_name"
+        }
+      },
+      "webservice": null,
+      "supportsDryRun": false,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "CLI profile name to activate."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json profile use prod"
+      ],
+      "repairHints": [
+        "Use auth.list_profiles first if the profile name is uncertain."
+      ]
+    },
+    {
+      "id": "auth.logout",
+      "domain": "auth",
+      "tool": "moodle_auth",
+      "action": "logout",
+      "layer": "shortcut",
+      "risk": "local_write",
+      "cli": {
+        "path": [
+          "auth",
+          "logout"
+        ],
+        "argv": {
+          "name": "--name"
+        }
+      },
+      "webservice": null,
+      "supportsDryRun": false,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "CLI profile name."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json auth logout --name prod"
+      ],
+      "repairHints": [
+        "Use auth.status before logout if you only need to inspect current auth state."
+      ]
+    },
+    {
+      "id": "doctor.check",
+      "domain": "doctor",
+      "tool": "moodle_doctor",
+      "action": "check",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "doctor"
+        ],
+        "argv": {}
+      },
+      "webservice": null,
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {},
+      "examples": [
+        "python3 scripts/moodle_cli.py --json doctor"
+      ],
+      "repairHints": [
+        "Use this before retrying a failing write command."
+      ]
+    },
+    {
+      "id": "course.context",
+      "domain": "course",
+      "tool": "moodle_course",
+      "action": "context",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "context",
+          "get"
+        ],
+        "argv": {}
+      },
+      "webservice": "local_aiagentapi_get_user_context",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {},
+      "examples": [
+        "python3 scripts/moodle_cli.py --json context get"
+      ],
+      "repairHints": [
+        "If token is missing, run auth.status then auth.login_start."
+      ]
+    },
+    {
+      "id": "course.list_courses",
+      "domain": "course",
+      "tool": "moodle_course",
+      "action": "list_courses",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "courses",
+          "list"
+        ],
+        "argv": {}
+      },
+      "webservice": "local_aiagentapi_courses_list_my",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {},
+      "examples": [
+        "python3 scripts/moodle_cli.py --json courses list"
+      ],
+      "repairHints": [
+        "If no courses are returned, check enrollment and token user identity."
+      ]
+    },
+    {
+      "id": "course.outline",
+      "domain": "course",
+      "tool": "moodle_course",
+      "action": "outline",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "courses",
+          "outline"
+        ],
+        "argv": {
+          "courseId": "--course-id"
+        }
+      },
+      "webservice": "local_aiagentapi_course_get_outline",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": true,
+          "api": "courseid",
+          "description": "Moodle course id."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json courses outline --course-id 116"
+      ],
+      "repairHints": [
+        "If the course is not visible, check enrollment and role permissions."
+      ]
+    },
+    {
+      "id": "course.list_activities",
+      "domain": "course",
+      "tool": "moodle_course",
+      "action": "list_activities",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "activities",
+          "list"
+        ],
+        "argv": {
+          "courseId": "--course-id",
+          "modname": "--modname"
+        }
+      },
+      "webservice": "local_aiagentapi_activities_list_by_course",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": true,
+          "api": "courseid",
+          "description": "Moodle course id."
+        },
+        "modname": {
+          "type": "string",
+          "required": false,
+          "api": "modname",
+          "description": "Optional Moodle module type filter, such as quiz or assign."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json activities list --course-id 116 --modname quiz"
+      ],
+      "repairHints": [
+        "If a known module is missing, check activity visibility and course permissions."
+      ]
+    },
+    {
+      "id": "course.activity_detail",
+      "domain": "course",
+      "tool": "moodle_course",
+      "action": "activity_detail",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "activities",
+          "detail"
+        ],
+        "argv": {
+          "cmid": "--cmid"
+        }
+      },
+      "webservice": "local_aiagentapi_course_activity_detail",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "cmid": {
+          "type": "integer",
+          "required": true,
+          "api": "cmid",
+          "description": "Moodle course module id."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json activities detail --cmid 123"
+      ],
+      "repairHints": [
+        "If detail lookup fails, confirm the cmid from course.outline or course.list_activities."
+      ]
+    },
+    {
+      "id": "course.due",
+      "domain": "course",
+      "tool": "moodle_course",
+      "action": "due",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "activities",
+          "due"
+        ],
+        "argv": {
+          "courseId": "--course-id",
+          "timestart": "--timestart",
+          "timeend": "--timeend",
+          "limit": "--limit"
+        }
+      },
+      "webservice": "local_aiagentapi_activities_due_list",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": false,
+          "api": "courseid"
+        },
+        "timestart": {
+          "type": "integer",
+          "required": false,
+          "api": "timestart"
+        },
+        "timeend": {
+          "type": "integer",
+          "required": false,
+          "api": "timeend"
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "default": 100,
+          "api": "limit"
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json activities due --course-id 116 --limit 20"
+      ],
+      "repairHints": [
+        "If due items are missing, verify course activity due/open/completion expected dates."
+      ]
+    },
+    {
+      "id": "course.resources",
+      "domain": "course",
+      "tool": "moodle_course",
+      "action": "resources",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "resources",
+          "list"
+        ],
+        "argv": {
+          "courseId": "--course-id"
+        }
+      },
+      "webservice": "local_aiagentapi_resources_list_by_course",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": true,
+          "api": "courseid"
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json resources list --course-id 116"
+      ],
+      "repairHints": [
+        "If resources are empty, call course.outline to inspect visible modules."
+      ]
+    },
+    {
+      "id": "course.grades",
+      "domain": "course",
+      "tool": "moodle_course",
+      "action": "grades",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "grades",
+          "overview"
+        ],
+        "argv": {
+          "courseId": "--course-id"
+        }
+      },
+      "webservice": "local_aiagentapi_grades_overview_my",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": false,
+          "api": "courseid"
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json grades overview --course-id 116"
+      ],
+      "repairHints": [
+        "If grades are unavailable, check gradebook visibility and user role."
+      ]
+    },
+    {
+      "id": "course.progress",
+      "domain": "course",
+      "tool": "moodle_course",
+      "action": "progress",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "progress",
+          "course"
+        ],
+        "argv": {
+          "courseId": "--course-id"
+        }
+      },
+      "webservice": "local_aiagentapi_course_progress_my",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": false,
+          "api": "courseid"
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json progress course --course-id 116"
+      ],
+      "repairHints": [
+        "If progress is unavailable, check completion tracking settings for the course."
+      ]
+    },
+    {
+      "id": "course.notifications",
+      "domain": "course",
+      "tool": "moodle_course",
+      "action": "notifications",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "notifications",
+          "list"
+        ],
+        "argv": {
+          "limitFrom": "--limit-from",
+          "limit": "--limit",
+          "unreadOnly": "--unread-only"
+        }
+      },
+      "webservice": "local_aiagentapi_notifications_list_my",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "limitFrom": {
+          "type": "integer",
+          "required": false,
+          "api": "limitfrom"
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "default": 50,
+          "api": "limitnum"
+        },
+        "unreadOnly": {
+          "type": "boolean",
+          "required": false,
+          "api": "unreadonly"
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json notifications list --unread-only --limit 20"
+      ],
+      "repairHints": [
+        "If notifications are empty, check the target user and Moodle notification settings."
+      ]
+    },
+    {
+      "id": "questionbank.categories",
+      "domain": "questionbank",
+      "tool": "moodle_questionbank",
+      "action": "categories",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "questions",
+          "categories"
+        ],
+        "argv": {
+          "courseId": "--course-id"
+        }
+      },
+      "webservice": "local_aiagentapi_question_categories_list",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": true,
+          "api": "courseid",
+          "description": "Moodle course id."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json questions categories --course-id 116"
+      ],
+      "repairHints": [
+        "If categories are empty, check question bank permissions and course context."
+      ]
+    },
+    {
+      "id": "questionbank.search",
+      "domain": "questionbank",
+      "tool": "moodle_questionbank",
+      "action": "search",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "questions",
+          "search"
+        ],
+        "argv": {
+          "query": "--query",
+          "courseId": "--course-id",
+          "categoryId": "--category-id",
+          "recurse": "--recurse",
+          "qtypes": "--qtype",
+          "limit": "--limit"
+        }
+      },
+      "webservice": "local_aiagentapi_questionbank_search",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "query": {
+          "type": "string",
+          "required": false,
+          "api": "query"
+        },
+        "courseId": {
+          "type": "integer",
+          "required": false,
+          "api": "courseid"
+        },
+        "categoryId": {
+          "type": "integer",
+          "required": false,
+          "api": "categoryid"
+        },
+        "recurse": {
+          "type": "boolean",
+          "required": false,
+          "api": "recurse"
+        },
+        "qtypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "required": false,
+          "repeatableCli": true,
+          "api": "qtypes"
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "default": 50,
+          "api": "limit"
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json questions search --course-id 116 --category-id 619 --qtype multichoice --limit 20"
+      ],
+      "repairHints": [
+        "If search returns no rows, call questionbank.categories to confirm category ids and context."
+      ]
+    },
+    {
+      "id": "questionbank.pick_random",
+      "domain": "questionbank",
+      "tool": "moodle_questionbank",
+      "action": "pick_random",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "questions",
+          "pick-random"
+        ],
+        "argv": {
+          "categoryId": "--category-id",
+          "count": "--count",
+          "recurse": "--recurse",
+          "seed": "--seed",
+          "qtypes": "--qtype"
+        }
+      },
+      "webservice": "local_aiagentapi_questionbank_pick_random",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "categoryId": {
+          "type": "integer",
+          "required": true,
+          "api": "categoryid"
+        },
+        "count": {
+          "type": "integer",
+          "required": true,
+          "api": "count"
+        },
+        "recurse": {
+          "type": "boolean",
+          "required": false,
+          "api": "recurse"
+        },
+        "seed": {
+          "type": "integer",
+          "required": false,
+          "api": "seed"
+        },
+        "qtypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "required": false,
+          "repeatableCli": true,
+          "api": "qtypes"
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json questions pick-random --category-id 619 --count 5 --qtype multichoice"
+      ],
+      "repairHints": [
+        "If not enough questions are returned, search the category and consider recurse or broader qtype filters."
+      ]
+    },
+    {
+      "id": "questionbank.render_html",
+      "domain": "questionbank",
+      "tool": "moodle_questionbank",
+      "action": "render_html",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "questions",
+          "render-html"
+        ],
+        "argv": {
+          "questionIds": "question_ids",
+          "shuffleAnswers": "--shuffle-answers",
+          "seed": "--seed",
+          "showCorrection": "--show-correction"
+        }
+      },
+      "webservice": "local_aiagentapi_questions_render_html",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "questionIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "required": true,
+          "positionalCli": true,
+          "api": "question_ids"
+        },
+        "shuffleAnswers": {
+          "type": "boolean",
+          "required": false,
+          "api": "shuffle_answers"
+        },
+        "seed": {
+          "type": "integer",
+          "required": false,
+          "api": "seed"
+        },
+        "showCorrection": {
+          "type": "boolean",
+          "required": false,
+          "api": "show_correction"
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json questions render-html 101 102 --show-correction"
+      ],
+      "repairHints": [
+        "Use questionbank.search or questionbank.pick_random to discover question ids first."
+      ]
+    },
+    {
+      "id": "quiz.list",
+      "domain": "quiz",
+      "tool": "moodle_quiz",
+      "action": "list",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "quiz",
+          "list"
+        ],
+        "argv": {
+          "courseId": "--course-id"
+        }
+      },
+      "webservice": "local_aiagentapi_quiz_list_by_course",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": true,
+          "api": "courseid",
+          "description": "Moodle course id."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json quiz list --course-id 116"
+      ],
+      "repairHints": [
+        "If no quizzes are returned, call course.outline and check course visibility."
+      ]
+    },
+    {
+      "id": "quiz.resolve_random",
+      "domain": "quiz",
+      "tool": "moodle_quiz",
+      "action": "resolve_random",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "quiz",
+          "resolve-random"
+        ],
+        "argv": {
+          "quizId": "--quiz-id",
+          "copies": "--copies",
+          "seed": "--seed",
+          "allowDuplicates": "--allow-duplicates"
+        }
+      },
+      "webservice": "local_aiagentapi_quiz_resolve_random",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "quizId": {
+          "type": "integer",
+          "required": true,
+          "api": "quizid",
+          "description": "Moodle quiz id."
+        },
+        "copies": {
+          "type": "integer",
+          "required": false,
+          "api": "copies",
+          "description": "Number of randomized copies to resolve.",
+          "default": 1
+        },
+        "seed": {
+          "type": "integer",
+          "required": false,
+          "api": "seed",
+          "description": "Optional random seed."
+        },
+        "allowDuplicates": {
+          "type": "boolean",
+          "required": false,
+          "api": "allowduplicates",
+          "description": "Allow duplicates across copies."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json quiz resolve-random --quiz-id 123 --copies 2"
+      ],
+      "repairHints": [
+        "Use this to inspect Moodle-native random slots without creating an attempt."
+      ]
+    },
+    {
+      "id": "quiz.attempts",
+      "domain": "quiz",
+      "tool": "moodle_quiz",
+      "action": "attempts",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "quiz",
+          "attempts"
+        ],
+        "argv": {
+          "courseId": "--course-id",
+          "quizId": "--quiz-id"
+        }
+      },
+      "webservice": "local_aiagentapi_quiz_attempts_my",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": false,
+          "api": "courseid",
+          "description": "Optional Moodle course id."
+        },
+        "quizId": {
+          "type": "integer",
+          "required": false,
+          "api": "quizid",
+          "description": "Optional Moodle quiz id."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json quiz attempts --course-id 116"
+      ],
+      "repairHints": [
+        "Use this before starting a new attempt to avoid unnecessary duplicate attempts."
+      ]
+    },
+    {
+      "id": "quiz.attempt_data",
+      "domain": "quiz",
+      "tool": "moodle_quiz",
+      "action": "attempt_data",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "quiz",
+          "attempt-data"
+        ],
+        "argv": {
+          "attemptId": "--attempt-id",
+          "page": "--page",
+          "preflight": "--preflight-json"
+        }
+      },
+      "webservice": "local_aiagentapi_quiz_get_attempt_data",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "attemptId": {
+          "type": "integer",
+          "required": true,
+          "api": "attemptid",
+          "description": "Moodle quiz attempt id."
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "api": "page",
+          "description": "Attempt page number.",
+          "default": 0
+        },
+        "preflight": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": false,
+          "api": "preflightdata",
+          "description": "Optional Moodle preflight name/value pairs.",
+          "repeatableCli": true
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json quiz attempt-data --attempt-id 456 --page 0"
+      ],
+      "repairHints": [
+        "Use attempt_data to inspect response schema before calling quiz.answer."
+      ]
+    },
+    {
+      "id": "quiz.attempt_summary",
+      "domain": "quiz",
+      "tool": "moodle_quiz",
+      "action": "attempt_summary",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "quiz",
+          "attempt-summary"
+        ],
+        "argv": {
+          "attemptId": "--attempt-id",
+          "preflight": "--preflight-json"
+        }
+      },
+      "webservice": "local_aiagentapi_quiz_get_attempt_summary",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "attemptId": {
+          "type": "integer",
+          "required": true,
+          "api": "attemptid",
+          "description": "Moodle quiz attempt id."
+        },
+        "preflight": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": false,
+          "api": "preflightdata",
+          "description": "Optional Moodle preflight name/value pairs.",
+          "repeatableCli": true
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json quiz attempt-summary --attempt-id 456"
+      ],
+      "repairHints": [
+        "Use this before final submission to show what will be submitted."
+      ]
+    },
+    {
+      "id": "quiz.create_practice",
+      "domain": "quiz",
+      "tool": "moodle_quiz",
+      "action": "create_practice",
+      "layer": "shortcut",
+      "risk": "write",
+      "cli": {
+        "path": [
+          "quiz",
+          "create-practice"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "courseId": "--course-id",
+          "cmid": "--cmid",
+          "lessonKey": "--lesson-key",
+          "title": "--title",
+          "count": "--count",
+          "section": "--section",
+          "categoryIds": "--category-id",
+          "kgIds": "--kg-id",
+          "qgIds": "--qg-id",
+          "tags": "--tag",
+          "seed": "--seed",
+          "allowPartial": "--allow-partial",
+          "selectionMode": "--selection-mode",
+          "random": "--random",
+          "visible": "--visible",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_practice_quiz_create_from_resource",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "courseId": {
+          "type": "integer",
+          "required": true,
+          "api": "courseid",
+          "description": "Target Moodle course id."
+        },
+        "cmid": {
+          "type": "integer",
+          "required": false,
+          "api": "cmid",
+          "description": "Optional lesson/resource cmid."
+        },
+        "lessonKey": {
+          "type": "string",
+          "required": false,
+          "api": "lesson_key",
+          "description": "Optional lesson key."
+        },
+        "title": {
+          "type": "string",
+          "required": false,
+          "api": "title",
+          "description": "Optional quiz title."
+        },
+        "count": {
+          "type": "integer",
+          "required": false,
+          "api": "count",
+          "description": "Number of questions to add.",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 5
+        },
+        "section": {
+          "type": "integer",
+          "required": false,
+          "api": "section",
+          "description": "Course section number, 0 means infer/default."
+        },
+        "categoryIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "required": false,
+          "api": "categoryids",
+          "description": "Repeatable Moodle question category ids.",
+          "repeatableCli": true
+        },
+        "kgIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "required": false,
+          "api": "kg_ids",
+          "description": "Additional KG ids.",
+          "repeatableCli": true
+        },
+        "qgIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "required": false,
+          "api": "qg_ids",
+          "description": "Additional QG ids.",
+          "repeatableCli": true
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "required": false,
+          "api": "tags",
+          "description": "Fallback text tags.",
+          "repeatableCli": true
+        },
+        "seed": {
+          "type": "integer",
+          "required": false,
+          "api": "seed",
+          "description": "Optional random seed."
+        },
+        "allowPartial": {
+          "type": "boolean",
+          "required": false,
+          "api": "allow_partial",
+          "description": "Create with fewer than count questions when necessary."
+        },
+        "selectionMode": {
+          "type": "string",
+          "enum": [
+            "fixed",
+            "random_category"
+          ],
+          "default": "fixed",
+          "required": false,
+          "api": "selection_mode",
+          "description": "Question selection mode."
+        },
+        "random": {
+          "type": "boolean",
+          "required": false,
+          "api": "selection_mode",
+          "description": "Shortcut for selectionMode=random_category."
+        },
+        "visible": {
+          "type": "boolean",
+          "required": false,
+          "api": "visible",
+          "description": "Make the created quiz visible to students."
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --profile dzexam --json --dry-run quiz create-practice --idempotency-key <key> --course-id 116 --category-id 619 --category-id 616 --count 30 --random"
+      ],
+      "repairHints": [
+        "If creation fails with permission errors, check local/aiagentapi:use and quiz/question bank capabilities.",
+        "If count validation fails, current supported maximum is 120."
+      ]
+    },
+    {
+      "id": "quiz.start",
+      "domain": "quiz",
+      "tool": "moodle_quiz",
+      "action": "start",
+      "layer": "shortcut",
+      "risk": "write",
+      "cli": {
+        "path": [
+          "quiz",
+          "start"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "quizId": "--quiz-id",
+          "preflight": "--preflight-json",
+          "forceNew": "--force-new",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_quiz_start_attempt",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "quizId": {
+          "type": "integer",
+          "required": true,
+          "api": "quizid",
+          "description": "Moodle quiz id."
+        },
+        "preflight": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": false,
+          "api": "preflightdata",
+          "description": "Optional Moodle preflight name/value pairs.",
+          "repeatableCli": true
+        },
+        "forceNew": {
+          "type": "boolean",
+          "required": false,
+          "api": "forcenew",
+          "description": "Force a fresh attempt."
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run quiz start --idempotency-key <key> --quiz-id 123"
+      ],
+      "repairHints": [
+        "If no quiz id is known, call quiz.list first."
+      ]
+    },
+    {
+      "id": "quiz.save_attempt",
+      "domain": "quiz",
+      "tool": "moodle_quiz",
+      "action": "save_attempt",
+      "layer": "shortcut",
+      "risk": "write",
+      "cli": {
+        "path": [
+          "quiz",
+          "save-attempt"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "attemptId": "--attempt-id",
+          "responses": "--response-json",
+          "preflight": "--preflight-json",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_quiz_save_attempt",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "attemptId": {
+          "type": "integer",
+          "required": true,
+          "api": "attemptid",
+          "description": "Moodle quiz attempt id."
+        },
+        "responses": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": true,
+          "api": "responses",
+          "description": "Moodle raw response name/value pairs.",
+          "repeatableCli": true
+        },
+        "preflight": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": false,
+          "api": "preflightdata",
+          "description": "Optional Moodle preflight name/value pairs.",
+          "repeatableCli": true
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run quiz save-attempt --idempotency-key <key> --attempt-id 456 --response-json '{\"name\":\"slots\",\"value\":\"1\"}'"
+      ],
+      "repairHints": [
+        "Prefer quiz.answer for supported choice questions; use save_attempt only when raw Moodle response names are known."
+      ]
+    },
+    {
+      "id": "quiz.submit_attempt",
+      "domain": "quiz",
+      "tool": "moodle_quiz",
+      "action": "submit_attempt",
+      "layer": "shortcut",
+      "risk": "high_write",
+      "cli": {
+        "path": [
+          "quiz",
+          "submit-attempt"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "attemptId": "--attempt-id",
+          "responses": "--response-json",
+          "preflight": "--preflight-json",
+          "timeup": "--timeup",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_quiz_submit_attempt",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "attemptId": {
+          "type": "integer",
+          "required": true,
+          "api": "attemptid",
+          "description": "Moodle quiz attempt id."
+        },
+        "responses": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": false,
+          "api": "responses",
+          "description": "Optional Moodle raw response name/value pairs.",
+          "repeatableCli": true
+        },
+        "preflight": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": false,
+          "api": "preflightdata",
+          "description": "Optional Moodle preflight name/value pairs.",
+          "repeatableCli": true
+        },
+        "timeup": {
+          "type": "boolean",
+          "required": false,
+          "api": "timeup",
+          "description": "Submit due to timer expiry."
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run quiz submit-attempt --idempotency-key <key> --attempt-id 456"
+      ],
+      "repairHints": [
+        "Call quiz.attempt_summary before submitting so the user can review the final state."
+      ]
+    },
+    {
+      "id": "quiz.answer",
+      "domain": "quiz",
+      "tool": "moodle_quiz",
+      "action": "answer",
+      "layer": "shortcut",
+      "risk": "high_write",
+      "cli": {
+        "path": [
+          "quiz",
+          "answer"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "attemptId": "--attempt-id",
+          "answers": "--answer-json",
+          "submit": "--submit",
+          "timeup": "--timeup",
+          "preflight": "--preflight-json",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_quiz_save_attempt",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "attemptId": {
+          "type": "integer",
+          "required": true,
+          "api": "attemptid",
+          "description": "Moodle quiz attempt id."
+        },
+        "answers": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": true,
+          "api": "answers",
+          "description": "Structured supported-answer objects, such as slot plus choice_index/choice_indexes.",
+          "repeatableCli": true
+        },
+        "submit": {
+          "type": "boolean",
+          "required": false,
+          "api": "submit",
+          "description": "Submit after applying answers."
+        },
+        "timeup": {
+          "type": "boolean",
+          "required": false,
+          "api": "timeup",
+          "description": "Submit due to timer expiry."
+        },
+        "preflight": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": false,
+          "api": "preflightdata",
+          "description": "Optional Moodle preflight name/value pairs.",
+          "repeatableCli": true
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run quiz answer --idempotency-key <key> --attempt-id 456 --answer-json '{\"slot\":1,\"choice_index\":0}'"
+      ],
+      "repairHints": [
+        "Use quiz.attempt_data first; quiz.answer supports only response schemas that the CLI can normalize safely."
+      ]
+    },
+    {
+      "id": "calendar.list",
+      "domain": "calendar",
+      "tool": "moodle_calendar",
+      "action": "list",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "calendar",
+          "list"
+        ],
+        "argv": {
+          "timestart": "--timestart",
+          "timeend": "--timeend",
+          "limit": "--limit"
+        }
+      },
+      "webservice": "local_aiagentapi_calendar_list",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "timestart": {
+          "type": "integer",
+          "required": false,
+          "api": "timestart",
+          "description": "Optional start unix timestamp."
+        },
+        "timeend": {
+          "type": "integer",
+          "required": false,
+          "api": "timeend",
+          "description": "Optional end unix timestamp."
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "api": "limit",
+          "description": "Maximum events to return.",
+          "default": 100
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json calendar list --limit 20"
+      ],
+      "repairHints": [
+        "Use course.due for activity due/open/completion timestamps; use calendar.list for calendar events."
+      ]
+    },
+    {
+      "id": "calendar.publish_plan",
+      "domain": "calendar",
+      "tool": "moodle_calendar",
+      "action": "publish_plan",
+      "layer": "shortcut",
+      "risk": "write",
+      "cli": {
+        "path": [
+          "calendar",
+          "publish-plan"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "items": "--item-json",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_calendar_publish_plan",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": true,
+          "api": "items",
+          "description": "Plan/calendar item objects.",
+          "repeatableCli": true
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run calendar publish-plan --idempotency-key <key> --item-json '{\"name\":\"Study\",\"timestart\":1760000000}'"
+      ],
+      "repairHints": [
+        "Preview with dry-run first; calendar writes create user-visible events."
+      ]
+    },
+    {
+      "id": "calendar.upsert_plan",
+      "domain": "calendar",
+      "tool": "moodle_calendar",
+      "action": "upsert_plan",
+      "layer": "shortcut",
+      "risk": "write",
+      "cli": {
+        "path": [
+          "calendar",
+          "upsert-plan"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "planKey": "--plan-key",
+          "items": "--item-json",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_calendar_plan_upsert",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "planKey": {
+          "type": "string",
+          "required": true,
+          "api": "plan_key",
+          "description": "Stable plan key."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": true,
+          "api": "items",
+          "description": "Plan/calendar item objects.",
+          "repeatableCli": true
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run calendar upsert-plan --idempotency-key <key> --plan-key weekly-plan --item-json '{\"name\":\"Study\",\"timestart\":1760000000}'"
+      ],
+      "repairHints": [
+        "Use upsert_plan when the caller has a stable plan key and wants repeatable updates."
+      ]
+    },
+    {
+      "id": "assignment.list",
+      "domain": "assignment",
+      "tool": "moodle_assignment",
+      "action": "list",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "assignments",
+          "list"
+        ],
+        "argv": {
+          "courseId": "--course-id"
+        }
+      },
+      "webservice": "local_aiagentapi_assignments_list_by_course",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": true,
+          "api": "courseid",
+          "description": "Moodle course id."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json assignments list --course-id 116"
+      ],
+      "repairHints": [
+        "Use course.list_activities with modname=assign if you need mixed activity context."
+      ]
+    },
+    {
+      "id": "assignment.status",
+      "domain": "assignment",
+      "tool": "moodle_assignment",
+      "action": "status",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "assignments",
+          "status"
+        ],
+        "argv": {
+          "courseId": "--course-id",
+          "assignId": "--assign-id"
+        }
+      },
+      "webservice": "local_aiagentapi_assignments_my_status",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": false,
+          "api": "courseid",
+          "description": "Optional Moodle course id."
+        },
+        "assignId": {
+          "type": "integer",
+          "required": false,
+          "api": "assignid",
+          "description": "Optional Moodle assignment id."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json assignments status --course-id 116"
+      ],
+      "repairHints": [
+        "Check assignment status before saving or submitting."
+      ]
+    },
+    {
+      "id": "assignment.save_draft",
+      "domain": "assignment",
+      "tool": "moodle_assignment",
+      "action": "save_draft",
+      "layer": "shortcut",
+      "risk": "write",
+      "cli": {
+        "path": [
+          "assignments",
+          "save-draft"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "assignId": "--assign-id",
+          "text": "--text",
+          "format": "--format",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_assignment_save_draft",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "assignId": {
+          "type": "integer",
+          "required": true,
+          "api": "assignid",
+          "description": "Moodle assignment id."
+        },
+        "text": {
+          "type": "string",
+          "required": true,
+          "api": "text",
+          "description": "Draft online-text content."
+        },
+        "format": {
+          "type": "integer",
+          "required": false,
+          "api": "format",
+          "description": "Moodle text format constant.",
+          "default": 1
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run assignments save-draft --idempotency-key <key> --assign-id 123 --text \"Draft\""
+      ],
+      "repairHints": [
+        "Save draft is reversible by editing the draft, but still changes student-visible submission state."
+      ]
+    },
+    {
+      "id": "assignment.submit_final",
+      "domain": "assignment",
+      "tool": "moodle_assignment",
+      "action": "submit_final",
+      "layer": "shortcut",
+      "risk": "high_write",
+      "cli": {
+        "path": [
+          "assignments",
+          "submit-final"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "assignId": "--assign-id",
+          "acceptSubmissionStatement": "--accept-submission-statement",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_assignment_submit_final",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "assignId": {
+          "type": "integer",
+          "required": true,
+          "api": "assignid",
+          "description": "Moodle assignment id."
+        },
+        "acceptSubmissionStatement": {
+          "type": "boolean",
+          "required": false,
+          "api": "accept_submission_statement",
+          "description": "Accept submission statement when required."
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run assignments submit-final --idempotency-key <key> --assign-id 123 --accept-submission-statement"
+      ],
+      "repairHints": [
+        "Submit final should only run after explicit user confirmation because it can lock or finalize grading state."
+      ]
+    },
+    {
+      "id": "forum.discussions",
+      "domain": "forum",
+      "tool": "moodle_forum",
+      "action": "discussions",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "forum",
+          "discussions"
+        ],
+        "argv": {
+          "courseId": "--course-id",
+          "forumId": "--forum-id",
+          "limit": "--limit"
+        }
+      },
+      "webservice": "local_aiagentapi_forum_discussions_list",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "courseId": {
+          "type": "integer",
+          "required": false,
+          "api": "courseid",
+          "description": "Optional Moodle course id."
+        },
+        "forumId": {
+          "type": "integer",
+          "required": false,
+          "api": "forumid",
+          "description": "Optional Moodle forum id."
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "api": "limit",
+          "description": "Maximum discussions to return.",
+          "default": 20
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json forum discussions --course-id 116 --limit 10"
+      ],
+      "repairHints": [
+        "Use this before replying so the target post/discussion is clear."
+      ]
+    },
+    {
+      "id": "forum.create_discussion",
+      "domain": "forum",
+      "tool": "moodle_forum",
+      "action": "create_discussion",
+      "layer": "shortcut",
+      "risk": "write",
+      "cli": {
+        "path": [
+          "forum",
+          "create-discussion"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "forumId": "--forum-id",
+          "subject": "--subject",
+          "message": "--message",
+          "groupId": "--group-id",
+          "subscribe": "--subscribe",
+          "pinned": "--pinned",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_forum_create_discussion",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "forumId": {
+          "type": "integer",
+          "required": true,
+          "api": "forumid",
+          "description": "Moodle forum id."
+        },
+        "subject": {
+          "type": "string",
+          "required": true,
+          "api": "subject",
+          "description": "Discussion subject."
+        },
+        "message": {
+          "type": "string",
+          "required": true,
+          "api": "message",
+          "description": "Discussion message."
+        },
+        "groupId": {
+          "type": "integer",
+          "required": false,
+          "api": "groupid",
+          "description": "Optional group id."
+        },
+        "subscribe": {
+          "type": "boolean",
+          "required": false,
+          "api": "subscribe",
+          "falseCli": "--no-subscribe",
+          "description": "Subscribe to the discussion."
+        },
+        "pinned": {
+          "type": "boolean",
+          "required": false,
+          "api": "pinned",
+          "description": "Pin discussion when capability allows."
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run forum create-discussion --idempotency-key <key> --forum-id 12 --subject \"Question\" --message \"...\""
+      ],
+      "repairHints": [
+        "Forum posts are user-visible; preview and confirm the exact text before writing."
+      ]
+    },
+    {
+      "id": "forum.reply",
+      "domain": "forum",
+      "tool": "moodle_forum",
+      "action": "reply",
+      "layer": "shortcut",
+      "risk": "write",
+      "cli": {
+        "path": [
+          "forum",
+          "reply"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "postId": "--post-id",
+          "subject": "--subject",
+          "message": "--message",
+          "subscribe": "--subscribe",
+          "privateReply": "--private-reply",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_forum_reply_post",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "postId": {
+          "type": "integer",
+          "required": true,
+          "api": "postid",
+          "description": "Parent post id."
+        },
+        "subject": {
+          "type": "string",
+          "required": true,
+          "api": "subject",
+          "description": "Reply subject."
+        },
+        "message": {
+          "type": "string",
+          "required": true,
+          "api": "message",
+          "description": "Reply message."
+        },
+        "subscribe": {
+          "type": "boolean",
+          "required": false,
+          "api": "subscribe",
+          "falseCli": "--no-subscribe",
+          "description": "Subscribe to the discussion."
+        },
+        "privateReply": {
+          "type": "boolean",
+          "required": false,
+          "api": "private_reply",
+          "description": "Create a private reply when supported."
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run forum reply --idempotency-key <key> --post-id 123 --subject \"Re:\" --message \"...\""
+      ],
+      "repairHints": [
+        "Confirm the parent post id from forum.discussions before replying."
+      ]
+    },
+    {
+      "id": "forum.update_post",
+      "domain": "forum",
+      "tool": "moodle_forum",
+      "action": "update_post",
+      "layer": "shortcut",
+      "risk": "write",
+      "cli": {
+        "path": [
+          "forum",
+          "update-post"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "postId": "--post-id",
+          "subject": "--subject",
+          "message": "--message",
+          "subscribe": "--subscribe",
+          "pinned": "--pinned",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_forum_update_post",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "postId": {
+          "type": "integer",
+          "required": true,
+          "api": "postid",
+          "description": "Forum post id."
+        },
+        "subject": {
+          "type": "string",
+          "required": false,
+          "api": "subject",
+          "description": "Updated subject."
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "api": "message",
+          "description": "Updated message."
+        },
+        "subscribe": {
+          "type": "boolean",
+          "required": false,
+          "api": "subscribe",
+          "falseCli": "--no-subscribe",
+          "description": "Subscribe to the discussion."
+        },
+        "pinned": {
+          "type": "boolean",
+          "required": false,
+          "api": "pinned",
+          "description": "Pin discussion when capability allows."
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run forum update-post --idempotency-key <key> --post-id 123 --message \"Updated\""
+      ],
+      "repairHints": [
+        "Only update posts after confirming the target post id and intended replacement text."
+      ]
+    },
+    {
+      "id": "forum.delete_post",
+      "domain": "forum",
+      "tool": "moodle_forum",
+      "action": "delete_post",
+      "layer": "shortcut",
+      "risk": "destructive",
+      "cli": {
+        "path": [
+          "forum",
+          "delete-post"
+        ],
+        "argv": {
+          "idempotencyKey": "--idempotency-key",
+          "postId": "--post-id",
+          "reason": "--reason"
+        }
+      },
+      "webservice": "local_aiagentapi_forum_delete_post",
+      "supportsDryRun": true,
+      "requiresConfirm": true,
+      "requiresIdempotencyKey": true,
+      "params": {
+        "idempotencyKey": {
+          "type": "string",
+          "required": true,
+          "api": "idempotency_key",
+          "description": "Stable client idempotency key."
+        },
+        "postId": {
+          "type": "integer",
+          "required": true,
+          "api": "postid",
+          "description": "Moodle forum post id."
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "api": "reason",
+          "description": "Audit reason."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json --dry-run forum delete-post --idempotency-key <key> --post-id 123"
+      ],
+      "repairHints": [
+        "Only use after explicit user request and permission confirmation. Actual delete requires allowDestructive=true."
+      ],
+      "requiresPluginConfig": {
+        "allowDestructive": true
+      }
+    }
+  ],
+  "functions": [
+    {
+      "id": "local_aiagentapi_get_api_catalog",
+      "domain": "catalog",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {}
+    },
+    {
+      "id": "local_aiagentapi_get_user_context",
+      "domain": "course",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {}
+    },
+    {
+      "id": "local_aiagentapi_course_get_outline",
+      "domain": "course",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "courseid": {
+          "type": "integer",
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_question_categories_list",
+      "domain": "questionbank",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "courseid": {
+          "type": "integer",
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_quiz_list_by_course",
+      "domain": "quiz",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "courseid": {
+          "type": "integer",
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_quiz_resolve_random",
+      "domain": "quiz",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "quizid": {
+          "type": "integer",
+          "required": true
+        },
+        "copies": {
+          "type": "integer",
+          "required": false
+        },
+        "seed": {
+          "type": "integer",
+          "required": false
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_quiz_attempts_my",
+      "domain": "quiz",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "courseid": {
+          "type": "integer",
+          "required": false
+        },
+        "quizid": {
+          "type": "integer",
+          "required": false
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_quiz_get_attempt_data",
+      "domain": "quiz",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "attemptid": {
+          "type": "integer",
+          "required": true
+        },
+        "page": {
+          "type": "integer",
+          "required": false
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_quiz_get_attempt_summary",
+      "domain": "quiz",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "attemptid": {
+          "type": "integer",
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_practice_quiz_create_from_resource",
+      "domain": "quiz",
+      "layer": "api",
+      "risk": "write",
+      "allowedByDefault": false,
+      "params": {
+        "courseid": {
+          "type": "integer",
+          "required": true
+        },
+        "categoryids": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "required": false
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "required": false
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_quiz_start_attempt",
+      "domain": "quiz",
+      "layer": "api",
+      "risk": "write",
+      "allowedByDefault": false,
+      "params": {
+        "quizid": {
+          "type": "integer",
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_quiz_save_attempt",
+      "domain": "quiz",
+      "layer": "api",
+      "risk": "write",
+      "allowedByDefault": false,
+      "params": {
+        "attemptid": {
+          "type": "integer",
+          "required": true
+        },
+        "responses": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": false
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_quiz_submit_attempt",
+      "domain": "quiz",
+      "layer": "api",
+      "risk": "high_write",
+      "allowedByDefault": false,
+      "params": {
+        "attemptid": {
+          "type": "integer",
+          "required": true
+        },
+        "responses": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": false
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_calendar_list",
+      "domain": "calendar",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "timestart": {
+          "type": "integer",
+          "required": false
+        },
+        "timeend": {
+          "type": "integer",
+          "required": false
+        },
+        "limit": {
+          "type": "integer",
+          "required": false
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_calendar_publish_plan",
+      "domain": "calendar",
+      "layer": "api",
+      "risk": "write",
+      "allowedByDefault": false,
+      "params": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_calendar_plan_upsert",
+      "domain": "calendar",
+      "layer": "api",
+      "risk": "write",
+      "allowedByDefault": false,
+      "params": {
+        "plan_key": {
+          "type": "string",
+          "required": true
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_assignments_list_by_course",
+      "domain": "assignment",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "courseid": {
+          "type": "integer",
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_assignments_my_status",
+      "domain": "assignment",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "courseid": {
+          "type": "integer",
+          "required": false
+        },
+        "assignid": {
+          "type": "integer",
+          "required": false
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_assignment_save_draft",
+      "domain": "assignment",
+      "layer": "api",
+      "risk": "write",
+      "allowedByDefault": false,
+      "params": {
+        "assignid": {
+          "type": "integer",
+          "required": true
+        },
+        "text": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_assignment_submit_final",
+      "domain": "assignment",
+      "layer": "api",
+      "risk": "high_write",
+      "allowedByDefault": false,
+      "params": {
+        "assignid": {
+          "type": "integer",
+          "required": true
+        },
+        "accept_submission_statement": {
+          "type": "boolean",
+          "required": false
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_forum_discussions_list",
+      "domain": "forum",
+      "layer": "api",
+      "risk": "read",
+      "allowedByDefault": true,
+      "params": {
+        "courseid": {
+          "type": "integer",
+          "required": false
+        },
+        "forumid": {
+          "type": "integer",
+          "required": false
+        },
+        "limit": {
+          "type": "integer",
+          "required": false
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_forum_create_discussion",
+      "domain": "forum",
+      "layer": "api",
+      "risk": "write",
+      "allowedByDefault": false,
+      "params": {
+        "forumid": {
+          "type": "integer",
+          "required": true
+        },
+        "subject": {
+          "type": "string",
+          "required": true
+        },
+        "message": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_forum_reply_post",
+      "domain": "forum",
+      "layer": "api",
+      "risk": "write",
+      "allowedByDefault": false,
+      "params": {
+        "postid": {
+          "type": "integer",
+          "required": true
+        },
+        "subject": {
+          "type": "string",
+          "required": true
+        },
+        "message": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_forum_update_post",
+      "domain": "forum",
+      "layer": "api",
+      "risk": "write",
+      "allowedByDefault": false,
+      "params": {
+        "postid": {
+          "type": "integer",
+          "required": true
+        }
+      }
+    },
+    {
+      "id": "local_aiagentapi_forum_delete_post",
+      "domain": "forum",
+      "layer": "api",
+      "risk": "destructive",
+      "allowedByDefault": false,
+      "params": {
+        "postid": {
+          "type": "integer",
+          "required": true
+        }
+      }
+    }
+  ]
+}

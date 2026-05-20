@@ -1,13 +1,7 @@
 ---
 name: moodle-aiagent-cli
-description: Use this skill for the Moodle AI agent stack in this repository. It covers local Moodle reads and writes through the project CLI, seeded regression, quiz attempts, question-bank actions, calendar plans, assignments, forums, and extending `local_aiagentapi`.
-metadata:
-  {
-    "openclaw":
-      {
-        "requires": { "bins": ["python3", "php"] }
-      }
-  }
+description: "Use this skill for the Moodle AI agent stack in this repository. It covers Moodle reads and writes through the remote WebService CLI, seeded regression, quiz attempts, question-bank actions, calendar plans, assignments, forums, and extending `local_aiagentapi`."
+metadata: {"openclaw":{"requires":{"bins":["python3"]}}}
 ---
 
 # Moodle AI Agent CLI
@@ -19,6 +13,77 @@ This is an OpenClaw-oriented adapter for the canonical generic skill. Canonical 
 This is the platform-neutral skill source for the Moodle AI agent stack in this repository.
 
 Use it when an agent should operate through the repo's stable CLI and AI-friendly API instead of manual Moodle UI actions.
+
+## Execution model
+
+The primary CLI is `scripts/moodle_cli.py`. It is a remote WebService client:
+
+```text
+python3 scripts/moodle_cli.py ...
+  -> <base-url>/webservice/rest/server.php
+  -> local_aiagentapi
+  -> Moodle server-side plugin code
+```
+
+Use this path for normal agent work, including reading courses, listing quizzes,
+starting attempts, and creating online practice quizzes. It only needs Python,
+a Moodle base URL, and a WebService token/profile. It does not need local PHP,
+`public/config.php`, or the Moodle server code directory.
+
+The PHP files under `scripts/*.php` are Moodle internal maintenance scripts.
+Use them only for plugin upgrades, service registration, data imports, seeding,
+or direct Moodle maintenance. Those scripts must run in a Moodle code tree with
+PHP and `config.php`.
+
+## Tool-first workflow
+
+When OpenClaw or Codex MCP tools from `moodle-aiagent-stack` are available,
+prefer them over typing raw CLI commands. The tools call
+`scripts/moodle_cli.py` with structured argv, preserve safety gates, and return
+structured details.
+
+OpenClaw loads these tools through `openclaw.plugin.json`,
+`package.json#openclaw.extensions`, and
+`package.json#openclaw.runtimeExtensions`.
+`index.ts` is the source entry, `index.js` is the installed runtime entry, and
+`shared/openclaw-tools.mjs` owns the OpenClaw tool schemas/registration.
+Codex loads the same tool surface through `.codex-plugin/plugin.json`,
+`.mcp.json`, and `scripts/moodle-mcp-server.mjs`.
+
+Start with `moodle_catalog` when the right action or parameter names are
+unclear:
+
+```json
+{ "action": "search", "query": "course outline" }
+```
+
+Then call the domain tool:
+
+```json
+{ "action": "outline", "params": { "courseId": 116 } }
+```
+
+Use this routing:
+
+- `moodle_auth`: setup, device login, profile status, profile switching, logout
+- `moodle_doctor`: diagnose auth/config/capability/network errors; use `explain_error` after a failed tool call
+- `moodle_course`: context, courses, outlines, activities, resources, grades, progress, notifications
+- `moodle_questionbank`: categories, search, random question selection, question HTML rendering
+- `moodle_quiz`: quiz lists, attempts, random resolution, practice quiz creation, answering, submission
+- `moodle_calendar`: event reads and study-plan calendar writes
+- `moodle_assignment`: assignment reads, draft save, final submit
+- `moodle_forum`: discussions, replies, post updates, guarded deletes
+- `moodle_api`: optional escape hatch; use only after `moodle_catalog get_function` shows no domain tool covers the need
+
+For writes, keep the first call as a dry run. Do not set `dryRun=false` unless
+the user asked for the change and the tool call includes `confirm=true` plus a
+stable `idempotencyKey`. Treat `forum.delete_post` as destructive; it also
+requires plugin config `allowDestructive=true`.
+
+In OpenClaw, read tool results from `details.ok`, `details.data`,
+`details.meta`, and `details.error`. In Codex MCP, read the same payload from
+`structuredContent` or parse the JSON text in `content[0].text`. The
+human-facing `content` text is only a summary.
 
 ## Environment choice
 
@@ -72,6 +137,28 @@ python3 scripts/moodle_cli.py auth status --name prod
 5. If web-service functions changed, re-register them:
    - `php scripts/register_aiagentapi_service_functions.php`
 
+## Online quiz creation
+
+Use the remote CLI, not a PHP maintenance script:
+
+```bash
+python3 scripts/moodle_cli.py --profile dzexam --json --force \
+  quiz create-practice \
+  --idempotency-key <stable-key> \
+  --course-id <courseid> \
+  --category-id <question-category-id> \
+  --category-id <another-question-category-id> \
+  --count 5 \
+  --random \
+  --title "课后练习"
+```
+
+Repeat `--category-id` when one qbank course stores the same chapter's questions in multiple Moodle question categories.
+
+If this fails, check the WebService token user's Moodle permissions first. Do
+not switch to a `php scripts/*.php` path unless the task is explicit server
+maintenance.
+
 ## Architecture rules
 
 - Keep business logic in `public/local/aiagentapi`
@@ -88,10 +175,13 @@ python3 scripts/moodle_cli.py auth status --name prod
 Treat this folder as the canonical skill source.
 
 - Claude Code adapters live under `.claude/skills/` and `plugins/`
+- Codex plugin metadata lives under `plugins/moodle-aiagent-stack/.codex-plugin/`
+- Codex MCP metadata lives in `plugins/moodle-aiagent-stack/.mcp.json`
 - OpenClaw-facing adapters live under `skills/`
 
 If the capability list or workflow changes, update this skill first, then sync the adapters.
 
 ## Read next
 
+- `plugins/moodle-aiagent-stack/README.md` when editing plugin internals or installing it for another host
 - `references/capabilities.md`
