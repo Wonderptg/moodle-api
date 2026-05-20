@@ -21,6 +21,8 @@ PLUGIN_DIR = ROOT / "plugins" / "moodle-aiagent-stack"
 PLUGIN_MANIFEST = PLUGIN_DIR / "openclaw.plugin.json"
 PLUGIN_PACKAGE = PLUGIN_DIR / "package.json"
 PLUGIN_SOURCE = PLUGIN_DIR / "index.ts"
+PLUGIN_RUNTIME = PLUGIN_DIR / "index.js"
+PLUGIN_TOOL_SOURCE = PLUGIN_DIR / "shared" / "openclaw-tools.mjs"
 COMMAND_MANIFEST = (
     ROOT
     / "agent-skills"
@@ -31,7 +33,6 @@ COMMAND_MANIFEST = (
 SYNCED_COMMAND_MANIFESTS = [
     PLUGIN_DIR / "skills" / "moodle-aiagent-cli" / "references" / "command-manifest.v0.1.json",
     ROOT / "skills" / "moodle-aiagent-cli" / "references" / "command-manifest.v0.1.json",
-    ROOT / ".claude" / "skills" / "moodle-aiagent-cli" / "references" / "command-manifest.v0.1.json",
 ]
 WRITE_RISKS = {"write", "high_write", "destructive"}
 REQUIRED_CONFIG_KEYS = {
@@ -57,7 +58,7 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def registered_tools(source: str) -> list[str]:
-    return re.findall(r'name:\s*"([^"]+)"', source)
+    return re.findall(r'\{\s*name:\s*"(moodle_[^"]+)"', source)
 
 
 def duplicates(values: list[str]) -> list[str]:
@@ -75,7 +76,12 @@ def validate() -> list[str]:
 
     plugin = load_json(PLUGIN_MANIFEST)
     package = load_json(PLUGIN_PACKAGE)
-    source = PLUGIN_SOURCE.read_text(encoding="utf-8")
+    sources = [
+        PLUGIN_SOURCE.read_text(encoding="utf-8"),
+        PLUGIN_RUNTIME.read_text(encoding="utf-8"),
+        PLUGIN_TOOL_SOURCE.read_text(encoding="utf-8"),
+    ]
+    source = "\n".join(sources)
     command_manifest = load_json(COMMAND_MANIFEST)
 
     package_openclaw = package.get("openclaw")
@@ -85,9 +91,23 @@ def validate() -> list[str]:
         extensions = package_openclaw.get("extensions")
         if extensions != ["./index.ts"]:
             errors.append('package.json openclaw.extensions must be ["./index.ts"]')
+        runtime_extensions = package_openclaw.get("runtimeExtensions")
+        if runtime_extensions != ["./index.js"]:
+            errors.append('package.json openclaw.runtimeExtensions must be ["./index.js"]')
+        compat = package_openclaw.get("compat")
+        if not isinstance(compat, dict) or compat.get("pluginApi") != ">=2026.5.12":
+            errors.append('package.json openclaw.compat.pluginApi must be ">=2026.5.12"')
+
+    peer_deps = package.get("peerDependencies")
+    if not isinstance(peer_deps, dict) or peer_deps.get("openclaw") != ">=2026.5.12":
+        errors.append('package.json peerDependencies.openclaw must be ">=2026.5.12"')
 
     if "@sinclair/typebox" in source or 'from "typebox"' in source:
         errors.append("runtime source should not depend on external TypeBox packages for local OpenClaw loading")
+    if 'from "openclaw/plugin-sdk/plugin-entry"' not in source:
+        errors.append('OpenClaw entrypoints must import definePluginEntry from "openclaw/plugin-sdk/plugin-entry"')
+    if "definePluginEntry({" not in source:
+        errors.append("OpenClaw entrypoints must use definePluginEntry")
 
     tools = (((plugin.get("contracts") or {}).get("tools")) or [])
     if not isinstance(tools, list) or not all(isinstance(item, str) for item in tools):
@@ -110,6 +130,11 @@ def validate() -> list[str]:
         errors.append(f"tools declared but not registered: {', '.join(missing)}")
     if extra:
         errors.append(f"tools registered but not declared: {', '.join(extra)}")
+
+    tool_metadata = plugin.get("toolMetadata")
+    moodle_api_metadata = tool_metadata.get("moodle_api") if isinstance(tool_metadata, dict) else None
+    if not isinstance(moodle_api_metadata, dict) or moodle_api_metadata.get("optional") is not True:
+        errors.append("openclaw.plugin.json toolMetadata.moodle_api.optional must be true")
 
     config_schema = plugin.get("configSchema")
     if not isinstance(config_schema, dict):

@@ -4,12 +4,23 @@
   "private": true,
   "description": "OpenClaw tool surface for the local Moodle local_aiagentapi stack.",
   "type": "module",
+  "peerDependencies": {
+    "openclaw": ">=2026.5.12"
+  },
   "openclaw": {
     "extensions": [
       "./index.ts"
     ],
+    "runtimeExtensions": [
+      "./index.js"
+    ],
     "compat": {
-      "pluginApi": ">=2026.4.25"
+      "pluginApi": ">=2026.5.12",
+      "minGatewayVersion": "2026.5.12"
+    },
+    "build": {
+      "openclawVersion": "2026.5.12",
+      "pluginSdkVersion": "2026.5.12"
     }
   }
 }

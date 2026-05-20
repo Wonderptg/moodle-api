@@ -22,6 +22,11 @@
       "moodle_api"
     ]
   },
+  "toolMetadata": {
+    "moodle_api": {
+      "optional": true
+    }
+  },
   "skills": [
     "./skills"
   ],
