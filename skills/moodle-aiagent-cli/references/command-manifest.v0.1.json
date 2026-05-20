@@ -2124,6 +2124,7 @@
           "type": "boolean",
           "required": false,
           "api": "subscribe",
+          "falseCli": "--no-subscribe",
           "description": "Subscribe to the discussion."
         },
         "pinned": {
@@ -2201,6 +2202,7 @@
           "type": "boolean",
           "required": false,
           "api": "subscribe",
+          "falseCli": "--no-subscribe",
           "description": "Subscribe to the discussion."
         },
         "privateReply": {
@@ -2278,6 +2280,7 @@
           "type": "boolean",
           "required": false,
           "api": "subscribe",
+          "falseCli": "--no-subscribe",
           "description": "Subscribe to the discussion."
         },
         "pinned": {
