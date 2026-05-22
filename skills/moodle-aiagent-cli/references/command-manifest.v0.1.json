@@ -776,7 +776,9 @@
           "categoryId": "--category-id",
           "recurse": "--recurse",
           "qtypes": "--qtype",
-          "limit": "--limit"
+          "tagIds": "--tag-id",
+          "limit": "--limit",
+          "offset": "--offset"
         }
       },
       "webservice": "local_aiagentapi_questionbank_search",
@@ -813,18 +815,154 @@
           "repeatableCli": true,
           "api": "qtypes"
         },
+        "tagIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "required": false,
+          "repeatableCli": true,
+          "api": "tagids",
+          "description": "Moodle native question tag ids to require."
+        },
         "limit": {
           "type": "integer",
           "required": false,
           "default": 50,
           "api": "limit"
+        },
+        "offset": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "api": "offset"
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json questions search --course-id 116 --category-id 619 --qtype multichoice --limit 20"
+        "python3 scripts/moodle_cli.py --json questions search --course-id 116 --category-id 619 --qtype multichoice --limit 20",
+        "python3 scripts/moodle_cli.py --json questions search --course-id 116 --category-id 619 --tag-id 461 --limit 20 --offset 20"
       ],
       "repairHints": [
         "If search returns no rows, call questionbank.categories to confirm category ids and context."
+      ]
+    },
+    {
+      "id": "questionbank.search_details",
+      "domain": "questionbank",
+      "tool": "moodle_questionbank",
+      "action": "search_details",
+      "layer": "shortcut",
+      "risk": "read",
+      "cli": {
+        "path": [
+          "questions",
+          "search-details"
+        ],
+        "argv": {
+          "query": "--query",
+          "courseId": "--course-id",
+          "categoryId": "--category-id",
+          "recurse": "--recurse",
+          "qtypes": "--qtype",
+          "tagIds": "--tag-id",
+          "limit": "--limit",
+          "offset": "--offset",
+          "shuffleAnswers": "--shuffle-answers",
+          "seed": "--seed",
+          "showCorrection": "--show-correction",
+          "includeFeedback": "--include-feedback"
+        }
+      },
+      "webservice": "local_aiagentapi_questionbank_search + local_aiagentapi_questions_render_html",
+      "supportsDryRun": false,
+      "requiresConfirm": false,
+      "requiresIdempotencyKey": false,
+      "params": {
+        "query": {
+          "type": "string",
+          "required": false,
+          "api": "query"
+        },
+        "courseId": {
+          "type": "integer",
+          "required": false,
+          "api": "courseid"
+        },
+        "categoryId": {
+          "type": "integer",
+          "required": false,
+          "api": "categoryid"
+        },
+        "recurse": {
+          "type": "boolean",
+          "required": false,
+          "api": "recurse"
+        },
+        "qtypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "required": false,
+          "repeatableCli": true,
+          "api": "qtypes"
+        },
+        "tagIds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "required": false,
+          "repeatableCli": true,
+          "api": "tagids",
+          "description": "Moodle native question tag ids to require."
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "default": 20,
+          "maximum": 50,
+          "api": "limit"
+        },
+        "offset": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "api": "offset"
+        },
+        "shuffleAnswers": {
+          "type": "boolean",
+          "required": false,
+          "api": "shuffle_answers"
+        },
+        "seed": {
+          "type": "integer",
+          "required": false,
+          "api": "seed"
+        },
+        "showCorrection": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "falseCli": "--hide-correction",
+          "api": "show_correction"
+        },
+        "includeFeedback": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "falseCli": "--hide-feedback",
+          "api": "include_feedback",
+          "description": "Include Moodle general feedback, combined feedback, and answer feedback when correction is shown."
+        }
+      },
+      "examples": [
+        "python3 scripts/moodle_cli.py --json questions search-details --course-id 116 --category-id 619 --limit 20",
+        "python3 scripts/moodle_cli.py --json questions search-details --course-id 116 --category-id 619 --query 第一章 --tag-id 461 --limit 20 --hide-correction"
+      ],
+      "repairHints": [
+        "Use questionbank.search first if you only need ids and metadata.",
+        "Keep limit modest because this renders question HTML, answers, and Moodle feedback for every returned question."
       ]
     },
     {
@@ -905,7 +1043,8 @@
           "questionIds": "question_ids",
           "shuffleAnswers": "--shuffle-answers",
           "seed": "--seed",
-          "showCorrection": "--show-correction"
+          "showCorrection": "--show-correction",
+          "includeFeedback": "--include-feedback"
         }
       },
       "webservice": "local_aiagentapi_questions_render_html",
@@ -936,10 +1075,19 @@
           "type": "boolean",
           "required": false,
           "api": "show_correction"
+        },
+        "includeFeedback": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "falseCli": "--hide-feedback",
+          "api": "include_feedback",
+          "description": "Include Moodle general feedback, combined feedback, and answer feedback when correction is shown."
         }
       },
       "examples": [
-        "python3 scripts/moodle_cli.py --json questions render-html 101 102 --show-correction"
+        "python3 scripts/moodle_cli.py --json questions render-html 101 102 --show-correction",
+        "python3 scripts/moodle_cli.py --json questions render-html 101 102 --show-correction --hide-feedback"
       ],
       "repairHints": [
         "Use questionbank.search or questionbank.pick_random to discover question ids first."

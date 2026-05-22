@@ -63,7 +63,7 @@ Use this routing:
 - `moodle_auth`: setup, device login, profile status, profile switching, logout
 - `moodle_doctor`: diagnose auth/config/capability/network errors; use `explain_error` after a failed tool call
 - `moodle_course`: context, courses, outlines, activities, resources, grades, progress, notifications
-- `moodle_questionbank`: categories, search, random question selection, question HTML rendering
+- `moodle_questionbank`: categories, search, search_details, random question selection, question HTML rendering
 - `moodle_quiz`: quiz lists, attempts, random resolution, practice quiz creation, answering, submission
 - `moodle_calendar`: event reads and study-plan calendar writes
 - `moodle_assignment`: assignment reads, draft save, final submit
@@ -79,6 +79,12 @@ In OpenClaw, read tool results from `details.ok`, `details.data`,
 `details.meta`, and `details.error`. In Codex MCP, read the same payload from
 `structuredContent` or parse the JSON text in `content[0].text`. The
 human-facing `content` text is only a summary.
+
+For question-bank browsing:
+
+- Use `moodle_questionbank(action=search)` for cheap lists of ids and metadata.
+- Use `moodle_questionbank(action=render_html)` when you already have question ids.
+- Use `moodle_questionbank(action=search_details)` when the user wants one searched page with question text, options, answer/correction markers, and Moodle feedback/analysis in the same call. Keep `limit` modest, typically 20 or less. Set `showCorrection=true` and `includeFeedback=true` when answers and analysis are requested.
 
 ## Environment choice
 
@@ -179,4 +185,5 @@ If the capability list or workflow changes, update this skill first, then sync t
 ## Read next
 
 - `plugins/moodle-aiagent-stack/README.md` when editing plugin internals or installing it for another host
+- `plugins/moodle-aiagent-stack/USE_CASES.md` for concrete tool-call recipes
 - `references/capabilities.md`

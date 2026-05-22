@@ -175,7 +175,7 @@ const MoodleCourseSchema = domainSchema(
 
 const MoodleQuestionbankSchema = domainSchema(
   "moodle_questionbank",
-  "Action-specific parameters. Common keys: courseId, contextId, parentId, query, categoryId, recurse, qtypes, limit, count, seed, questionIds.",
+  "Action-specific parameters. Common keys: courseId, contextId, parentId, query, categoryId, recurse, qtypes, tagIds, limit, offset, count, seed, questionIds, showCorrection, includeFeedback, shuffleAnswers.",
 );
 
 const MoodleQuizSchema = domainSchema(

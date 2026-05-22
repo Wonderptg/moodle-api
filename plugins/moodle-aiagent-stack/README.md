@@ -57,8 +57,9 @@ validate safety gates, and build CLI arguments.
 
 1. `README.md`: package layout and development rules.
 2. `skills/moodle-aiagent-cli/SKILL.md`: how an AI should use the tools.
-3. `skills/moodle-aiagent-cli/references/command-manifest.v0.1.json`: tool/action/CLI/API mapping.
-4. `docs/moodle-openclaw-codex-dual-plugin-2026-05-18.md`: short ADR for why OpenClaw and Codex need separate entrypoints.
+3. `USE_CASES.md`: common task recipes, especially question search plus answers.
+4. `skills/moodle-aiagent-cli/references/command-manifest.v0.1.json`: tool/action/CLI/API mapping.
+5. `docs/moodle-openclaw-codex-dual-plugin-2026-05-18.md`: short ADR for why OpenClaw and Codex need separate entrypoints.
 
 ## Tool Surface
 
@@ -83,6 +84,15 @@ Routing rule:
 - Use a domain tool for actual work.
 - Use `moodle_doctor` after a failed call.
 - Use `moodle_api` only as an advanced escape hatch.
+
+Question-bank browsing rule:
+
+- `moodle_questionbank.search` is a cheap id/metadata list.
+- `moodle_questionbank.render_html` renders known ids.
+- `moodle_questionbank.search_details` searches one page and renders that page
+  with text, options, correction markers, and Moodle feedback/analysis. Use it
+  when an AI or admin UI needs to inspect answers and explanations for a modest
+  result set, usually `limit <= 20`.
 
 ## Safety Rules
 

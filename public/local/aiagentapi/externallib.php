@@ -32,9 +32,12 @@ require_once($CFG->libdir . '/questionlib.php');
 require_once($CFG->libdir . '/filelib.php');
 require_once($CFG->libdir . '/modinfolib.php');
 require_once($CFG->libdir . '/gradelib.php');
+require_once($CFG->libdir . '/completionlib.php');
+require_once($CFG->dirroot . '/course/lib.php');
 require_once($CFG->dirroot . '/message/lib.php');
 require_once($CFG->dirroot . '/message/externallib.php');
 require_once($CFG->dirroot . '/completion/classes/external.php');
+require_once($CFG->dirroot . '/course/modlib.php');
 require_once($CFG->dirroot . '/mod/assign/externallib.php');
 require_once($CFG->dirroot . '/mod/forum/externallib.php');
 require_once($CFG->dirroot . '/mod/forum/lib.php');
@@ -54,6 +57,8 @@ class local_aiagentapi_external extends external_api {
     private const MAX_RANDOM_PICK = 100;
     /** Max copies allowed when resolving random quiz questions. */
     private const MAX_QUIZ_COPIES = 10;
+    /** Max questions allowed when creating a practice quiz. */
+    private const MAX_PRACTICE_QUIZ_QUESTIONS = 120;
 
     /**
      * Resolve a safe context for WS calls restricted by token context.
@@ -86,6 +91,22 @@ class local_aiagentapi_external extends external_api {
             $contextids[] = (int)\context_module::instance($cm->id)->id;
         }
         return array_values(array_unique($contextids));
+    }
+
+    /**
+     * Return true when a database table exists.
+     *
+     * @param string $tablename
+     * @return bool
+     */
+    private static function table_exists(string $tablename): bool {
+        global $DB;
+
+        try {
+            return $DB->get_manager()->table_exists(new \xmldb_table($tablename));
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**
@@ -1244,6 +1265,120 @@ class local_aiagentapi_external extends external_api {
     }
 
     /**
+     * Render a Moodle question feedback field to HTML.
+     *
+     * @param \stdClass $question
+     * @param \context $questioncontext
+     * @param string|null $feedback
+     * @param int|null $format
+     * @param string $filearea
+     * @param int $itemid
+     * @return string
+     */
+    private static function render_feedback_text(
+        \stdClass $question,
+        \context $questioncontext,
+        ?string $feedback,
+        ?int $format,
+        string $filearea,
+        int $itemid
+    ): string {
+        $feedback = (string)($feedback ?? '');
+        if ($feedback === '') {
+            return '';
+        }
+
+        $feedback = question_rewrite_question_preview_urls(
+            $feedback,
+            $question->id,
+            $question->contextid,
+            'question',
+            $filearea,
+            $itemid,
+            $questioncontext->id,
+            'core_question'
+        );
+
+        $feedback = format_text(
+            $feedback,
+            $format ?? FORMAT_HTML,
+            [
+                'context' => $questioncontext,
+                'noclean' => true,
+                'para' => false,
+            ]
+        );
+
+        return self::replace_blank_placeholders($feedback);
+    }
+
+    /**
+     * Build the feedback/analysis payload for a question.
+     *
+     * @param \stdClass $question
+     * @param \context $questioncontext
+     * @return array
+     */
+    private static function question_explanation_payload(\stdClass $question, \context $questioncontext): array {
+        $options = $question->options ?? new \stdClass();
+        $fields = [
+            'general_feedback' => [
+                $question->generalfeedback ?? '',
+                $question->generalfeedbackformat ?? FORMAT_HTML,
+                'generalfeedback',
+                (int)$question->id,
+            ],
+            'correct_feedback' => [
+                $options->correctfeedback ?? '',
+                $options->correctfeedbackformat ?? FORMAT_HTML,
+                'correctfeedback',
+                (int)$question->id,
+            ],
+            'partially_correct_feedback' => [
+                $options->partiallycorrectfeedback ?? '',
+                $options->partiallycorrectfeedbackformat ?? FORMAT_HTML,
+                'partiallycorrectfeedback',
+                (int)$question->id,
+            ],
+            'incorrect_feedback' => [
+                $options->incorrectfeedback ?? '',
+                $options->incorrectfeedbackformat ?? FORMAT_HTML,
+                'incorrectfeedback',
+                (int)$question->id,
+            ],
+        ];
+
+        $payload = [];
+        foreach ($fields as $name => [$feedback, $format, $filearea, $itemid]) {
+            $html = self::render_feedback_text(
+                $question,
+                $questioncontext,
+                (string)$feedback,
+                (int)$format,
+                $filearea,
+                (int)$itemid
+            );
+            $payload[$name . '_html'] = $html;
+            $payload[$name . '_plain'] = trim(html_to_text((string)$html, 0));
+        }
+        return $payload;
+    }
+
+    /**
+     * Empty feedback payload used when correction visibility is disabled.
+     *
+     * @return array
+     */
+    private static function blank_question_explanation_payload(): array {
+        $payload = [];
+        foreach (['general_feedback', 'correct_feedback', 'partially_correct_feedback', 'incorrect_feedback'] as $name) {
+            $payload[$name . '_html'] = '';
+            $payload[$name . '_plain'] = '';
+        }
+        return $payload;
+    }
+
+    /**
      * Static API catalog for agent bootstrapping.
      *
      * @return array
@@ -1836,11 +1971,17 @@ class local_aiagentapi_external extends external_api {
                         'required' => false,
                         'description' => 'Include correct-answer markers in HTML.',
                     ],
+                    [
+                        'name' => 'include_feedback',
+                        'type' => 'bool',
+                        'required' => false,
+                        'description' => 'Include Moodle general feedback and answer feedback when corrections are shown.',
+                    ],
                 ],
                 'data_fields' => [
                     'questions[]',
                 ],
-                'notes' => 'Supports multichoice/multichoiceset/truefalse answers.',
+                'notes' => 'Supports multichoice/multichoiceset/truefalse answers and Moodle feedback fields when show_correction is true.',
             ],
             [
                 'name' => 'local_aiagentapi_quiz_resolve_random',
@@ -1882,6 +2023,41 @@ class local_aiagentapi_external extends external_api {
                     'copies[]',
                 ],
                 'notes' => 'Deletes temporary attempts after resolution.',
+            ],
+            [
+                'name' => 'local_aiagentapi_practice_quiz_create_from_resource',
+                'description' => 'Create a post-lesson practice quiz from existing mapped question-bank questions.',
+                'type' => 'write',
+                'capabilities' => [
+                    'local/aiagentapi:use',
+                    'moodle/course:manageactivities',
+                    'mod/quiz:addinstance',
+                    'moodle/question:useall',
+                ],
+                'idempotent' => true,
+                'supports_dry_run' => true,
+                'params' => [
+                    ['name' => 'idempotency_key', 'type' => 'string', 'required' => true, 'description' => 'Client-provided idempotency key.'],
+                    ['name' => 'courseid', 'type' => 'int', 'required' => true, 'description' => 'Target Moodle course id.'],
+                    ['name' => 'cmid', 'type' => 'int', 'required' => false, 'description' => 'Optional lesson/resource cmid used to read resource_map facts.'],
+                    ['name' => 'lesson_key', 'type' => 'string', 'required' => false, 'description' => 'Optional lesson key used to read resource_map facts.'],
+                    ['name' => 'title', 'type' => 'string', 'required' => false, 'description' => 'Optional quiz title.'],
+                    ['name' => 'count', 'type' => 'int', 'required' => false, 'description' => 'Number of questions to add, max 120.'],
+                    ['name' => 'section', 'type' => 'int', 'required' => false, 'description' => 'Course section number, 0 means infer/default.'],
+                    ['name' => 'categoryid', 'type' => 'int', 'required' => false, 'description' => 'Optional question category id.'],
+                    ['name' => 'categoryids', 'type' => 'array', 'required' => false, 'description' => 'Optional extra question category ids for mixed-category quizzes.'],
+                    ['name' => 'kg_ids', 'type' => 'array', 'required' => false, 'description' => 'Additional KG ids.'],
+                    ['name' => 'qg_ids', 'type' => 'array', 'required' => false, 'description' => 'Additional QG ids.'],
+                    ['name' => 'tags', 'type' => 'array', 'required' => false, 'description' => 'Fallback text tags searched in question title/text.'],
+                    ['name' => 'seed', 'type' => 'int', 'required' => false, 'description' => 'Optional random seed.'],
+                    ['name' => 'allow_partial', 'type' => 'bool', 'required' => false, 'description' => 'Create with fewer than count questions when necessary.'],
+                    ['name' => 'selection_mode', 'type' => 'string', 'required' => false, 'description' => 'fixed or random_category.'],
+                    ['name' => 'visible', 'type' => 'bool', 'required' => false, 'description' => 'Make the created quiz visible to students; default is hidden.'],
+                    ['name' => 'dry_run', 'type' => 'bool', 'required' => false, 'description' => 'Validate and preview without writing.'],
+                    ['name' => 'reason', 'type' => 'string', 'required' => false, 'description' => 'Optional audit reason.'],
+                ],
+                'data_fields' => ['quizid', 'quiz_cmid', 'url', 'selection_mode', 'visible', 'questions[]', 'resource_map'],
+                'notes' => 'Uses Moodle native course, quiz, and question capabilities; fixed mode adds concrete questions, random_category mode adds Moodle random slots from the selected question category.',
             ],
             [
                 'name' => 'local_aiagentapi_quiz_start_attempt',
@@ -4577,7 +4753,14 @@ class local_aiagentapi_external extends external_api {
                 VALUE_DEFAULT,
                 []
             ),
+            'tagids' => new external_multiple_structure(
+                new external_value(PARAM_INT, 'Moodle question tag id'),
+                'Moodle question tag ids to require',
+                VALUE_DEFAULT,
+                []
+            ),
             'limit' => new external_value(PARAM_INT, 'Maximum rows to return', VALUE_DEFAULT, 50),
+            'offset' => new external_value(PARAM_INT, 'Pagination offset', VALUE_DEFAULT, 0),
         ]);
     }
 
@@ -4589,16 +4772,20 @@ class local_aiagentapi_external extends external_api {
      * @param int $categoryid
      * @param bool $recurse
      * @param array $qtypes
+     * @param array $tagids
      * @param int $limit
+     * @param int $offset
      * @return array
      */
     public static function questionbank_search(
-        string $query,
-        int $courseid,
-        int $categoryid,
-        bool $recurse,
-        array $qtypes,
-        int $limit
+        string $query = '',
+        int $courseid = 0,
+        int $categoryid = 0,
+        bool $recurse = false,
+        array $qtypes = [],
+        array $tagids = [],
+        int $limit = 50,
+        int $offset = 0
     ): array {
         global $DB, $USER;
 
@@ -4608,20 +4795,22 @@ class local_aiagentapi_external extends external_api {
             'categoryid' => $categoryid,
             'recurse' => $recurse,
             'qtypes' => $qtypes,
+            'tagids' => $tagids,
             'limit' => $limit,
+            'offset' => $offset,
         ]);
 
         self::restricted_context();
         $auditid = self::uuid_v4();
 
         try {
-            if (!empty($params['courseid']) && !empty($params['categoryid'])) {
-                throw new \invalid_parameter_exception('Use either courseid or categoryid, not both.');
-            }
-
             $limitnum = (int)$params['limit'];
             if ($limitnum < 1 || $limitnum > 200) {
                 throw new \invalid_parameter_exception('Limit must be between 1 and 200.');
+            }
+            $offsetnum = (int)$params['offset'];
+            if ($offsetnum < 0) {
+                throw new \invalid_parameter_exception('Offset must be zero or greater.');
             }
 
             $categoryids = [];
@@ -4685,8 +4874,32 @@ class local_aiagentapi_external extends external_api {
                 $sqlparams = array_merge($sqlparams, $qtparams);
             }
 
+            $tagids = array_values(array_unique(array_filter(array_map('intval', (array)$params['tagids']), static function(int $value): bool {
+                return $value > 0;
+            })));
+            if (!empty($tagids)) {
+                [$tagidsql, $tagidparams] = $DB->get_in_or_equal($tagids, SQL_PARAMS_QM);
+                $where[] = "q.id IN (
+                    SELECT ti.itemid
+                      FROM {tag_instance} ti
+                     WHERE ti.component = ?
+                       AND ti.itemtype = ?
+                       AND ti.tagid $tagidsql
+                  GROUP BY ti.itemid
+                    HAVING COUNT(DISTINCT ti.tagid) = ?
+                )";
+                $sqlparams[] = 'core_question';
+                $sqlparams[] = 'question';
+                $sqlparams = array_merge($sqlparams, $tagidparams);
+                $sqlparams[] = count($tagids);
+            }
+
             $sql .= ' WHERE (' . implode(') AND (', $where) . ') ORDER BY q.timemodified DESC, q.id DESC';
-            $records = $DB->get_records_sql($sql, $sqlparams, 0, $limitnum);
+            $records = array_values($DB->get_records_sql($sql, $sqlparams, $offsetnum, $limitnum + 1));
+            $hasmore = count($records) > $limitnum;
+            if ($hasmore) {
+                $records = array_slice($records, 0, $limitnum);
+            }
 
             $payload = [];
             foreach ($records as $record) {
@@ -4702,11 +4915,27 @@ class local_aiagentapi_external extends external_api {
                 ];
             }
 
-            $response = self::response_ok($auditid, ['questions' => $payload]);
+            $response = self::response_ok($auditid, [
+                'questions' => $payload,
+                'page' => [
+                    'limit' => $limitnum,
+                    'offset' => $offsetnum,
+                    'next_offset' => $hasmore ? $offsetnum + $limitnum : -1,
+                    'has_more' => $hasmore,
+                ],
+            ]);
             self::audit($USER->id, 'questionbank_search', true, $auditid, $params, $response);
             return $response;
         } catch (\Throwable $e) {
-            $response = self::response_error($auditid, 'questionbank_search_failed', $e->getMessage());
+            $response = self::response_error($auditid, 'questionbank_search_failed', $e->getMessage(), false, false, [
+                'questions' => [],
+                'page' => [
+                    'limit' => (int)($params['limit'] ?? 50),
+                    'offset' => (int)($params['offset'] ?? 0),
+                    'next_offset' => -1,
+                    'has_more' => false,
+                ],
+            ]);
             self::audit($USER->id, 'questionbank_search', false, $auditid, $params, $response);
             return $response;
         }
@@ -4732,6 +4961,12 @@ class local_aiagentapi_external extends external_api {
                         'timemodified' => new external_value(PARAM_INT, 'Modified time'),
                     ])
                 ),
+                'page' => new external_single_structure([
+                    'limit' => new external_value(PARAM_INT, 'Page size'),
+                    'offset' => new external_value(PARAM_INT, 'Current offset'),
+                    'next_offset' => new external_value(PARAM_INT, 'Next offset, or -1'),
+                    'has_more' => new external_value(PARAM_BOOL, 'Whether another page exists'),
+                ], 'Pagination metadata', VALUE_OPTIONAL),
             ])
         );
     }
@@ -4895,6 +5130,7 @@ class local_aiagentapi_external extends external_api {
             'shuffle_answers' => new external_value(PARAM_BOOL, 'Shuffle answer order', VALUE_DEFAULT, false),
             'seed' => new external_value(PARAM_INT, 'Optional seed for shuffling', VALUE_DEFAULT, 0),
             'show_correction' => new external_value(PARAM_BOOL, 'Include correct-answer markers', VALUE_DEFAULT, false),
+            'include_feedback' => new external_value(PARAM_BOOL, 'Include Moodle feedback/analysis fields when corrections are shown', VALUE_DEFAULT, true),
         ]);
     }
 
@@ -4905,9 +5141,16 @@ class local_aiagentapi_external extends external_api {
      * @param bool $shuffleanswers
      * @param int $seed
      * @param bool $showcorrection
+     * @param bool $includefeedback
      * @return array
      */
-    public static function questions_render_html(array $questionids, bool $shuffleanswers, int $seed, bool $showcorrection): array {
+    public static function questions_render_html(
+        array $questionids,
+        bool $shuffleanswers,
+        int $seed,
+        bool $showcorrection,
+        bool $includefeedback = true
+    ): array {
         global $DB, $USER;
 
         $params = self::validate_parameters(self::questions_render_html_parameters(), [
@@ -4915,6 +5158,7 @@ class local_aiagentapi_external extends external_api {
             'shuffle_answers' => $shuffleanswers,
             'seed' => $seed,
             'show_correction' => $showcorrection,
+            'include_feedback' => $includefeedback,
         ]);
 
         self::restricted_context();
@@ -4976,6 +5220,7 @@ class local_aiagentapi_external extends external_api {
 
             $rendered = [];
             $number = 1;
+            $showfeedback = !empty($params['show_correction']) && !empty($params['include_feedback']);
             foreach ($ordered as $qid) {
                 $question = $questions[$qid];
                 if (empty($questioncontexts[$qid])) {
@@ -5006,19 +5251,36 @@ class local_aiagentapi_external extends external_api {
                         $plain = trim(html_to_text((string)$answerhtml, 0));
                         $label = self::answer_label($answerindex);
                         $iscorrect = !empty($answerrecord->fraction) && $answerrecord->fraction > 0;
-                        if ($iscorrect) {
+                        if ($params['show_correction'] && $iscorrect) {
                             $correctlabels[] = $label;
                         }
                         $displayhtml = $answerhtml;
                         if ($params['show_correction'] && $iscorrect) {
                             $displayhtml = html_writer::tag('strong', $displayhtml);
                         }
+                        $feedbackhtml = '';
+                        $feedbackplain = '';
+                        if ($showfeedback) {
+                            $feedbackhtml = self::render_feedback_text(
+                                $question,
+                                $qcontext,
+                                $answerrecord->feedback ?? '',
+                                isset($answerrecord->feedbackformat) ? (int)$answerrecord->feedbackformat : FORMAT_HTML,
+                                'answerfeedback',
+                                (int)($answerrecord->id ?? $question->id)
+                            );
+                            $feedbackplain = trim(html_to_text((string)$feedbackhtml, 0));
+                        }
                         $answers[] = [
                             'label' => $label,
                             'html' => $displayhtml,
                             'plain' => $plain,
-                            'fraction' => isset($answerrecord->fraction) ? (float)$answerrecord->fraction : 0.0,
-                            'is_correct' => $iscorrect ? 1 : 0,
+                            'fraction' => $params['show_correction'] && isset($answerrecord->fraction)
+                                ? (float)$answerrecord->fraction
+                                : 0.0,
+                            'is_correct' => $params['show_correction'] && $iscorrect ? 1 : 0,
+                            'feedback_html' => $feedbackhtml,
+                            'feedback_plain' => $feedbackplain,
                         ];
                         $answerindex++;
                     }
@@ -5048,6 +5310,9 @@ class local_aiagentapi_external extends external_api {
                     static fn($a) => $a['label'] . '. ' . $a['plain'],
                     $answers
                 )));
+                $explanation = $showfeedback
+                    ? self::question_explanation_payload($question, $qcontext)
+                    : self::blank_question_explanation_payload();
 
                 $rendered[] = [
                     'id' => (int)$question->id,
@@ -5058,6 +5323,7 @@ class local_aiagentapi_external extends external_api {
                     'text_plain' => $questionplain,
                     'answers' => $answers,
                     'correct_labels' => $correctlabels,
+                    'explanation' => $explanation,
                     'html' => $fullhtml,
                     'plain' => $fullplain,
                 ];
@@ -5107,11 +5373,23 @@ class local_aiagentapi_external extends external_api {
                                 'plain' => new external_value(PARAM_TEXT, 'Answer plain text'),
                                 'fraction' => new external_value(PARAM_FLOAT, 'Fraction'),
                                 'is_correct' => new external_value(PARAM_BOOL, 'Correct answer flag'),
+                                'feedback_html' => new external_value(PARAM_RAW, 'Answer feedback HTML'),
+                                'feedback_plain' => new external_value(PARAM_TEXT, 'Answer feedback plain text'),
                             ])
                         ),
                         'correct_labels' => new external_multiple_structure(
                             new external_value(PARAM_TEXT, 'Correct answer labels')
                         ),
+                        'explanation' => new external_single_structure([
+                            'general_feedback_html' => new external_value(PARAM_RAW, 'General feedback HTML'),
+                            'general_feedback_plain' => new external_value(PARAM_TEXT, 'General feedback plain text'),
+                            'correct_feedback_html' => new external_value(PARAM_RAW, 'Correct feedback HTML'),
+                            'correct_feedback_plain' => new external_value(PARAM_TEXT, 'Correct feedback plain text'),
+                            'partially_correct_feedback_html' => new external_value(PARAM_RAW, 'Partially correct feedback HTML'),
+                            'partially_correct_feedback_plain' => new external_value(PARAM_TEXT, 'Partially correct feedback plain text'),
+                            'incorrect_feedback_html' => new external_value(PARAM_RAW, 'Incorrect feedback HTML'),
+                            'incorrect_feedback_plain' => new external_value(PARAM_TEXT, 'Incorrect feedback plain text'),
+                        ]),
                         'html' => new external_value(PARAM_RAW, 'Rendered question HTML block'),
                         'plain' => new external_value(PARAM_TEXT, 'Rendered question plain text'),
                     ])
@@ -5247,6 +5525,764 @@ class local_aiagentapi_external extends external_api {
                         ),
                     ])
                 ),
+            ])
+        );
+    }
+
+    /**
+     * Decode a stored JSON list into strings.
+     *
+     * @param string|null $json
+     * @return array
+     */
+    private static function decode_string_list(?string $json): array {
+        $decoded = json_decode((string)$json, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $seen = [];
+        $values = [];
+        foreach ($decoded as $item) {
+            $value = trim((string)$item);
+            if ($value === '' || isset($seen[$value])) {
+                continue;
+            }
+            $seen[$value] = true;
+            $values[] = $value;
+        }
+        return $values;
+    }
+
+    /**
+     * Normalize a list of strings.
+     *
+     * @param array $items
+     * @return array
+     */
+    private static function unique_string_list(array $items): array {
+        $seen = [];
+        $values = [];
+        foreach ($items as $item) {
+            $value = trim((string)$item);
+            if ($value === '' || isset($seen[$value])) {
+                continue;
+            }
+            $seen[$value] = true;
+            $values[] = $value;
+        }
+        return $values;
+    }
+
+    /**
+     * Return true when a text contains a phrase, with mb support when available.
+     *
+     * @param string $text
+     * @param string $phrase
+     * @return bool
+     */
+    private static function practice_text_contains(string $text, string $phrase): bool {
+        $text = trim($text);
+        $phrase = trim($phrase);
+        if ($text === '' || $phrase === '') {
+            return false;
+        }
+        if (function_exists('mb_stripos')) {
+            return mb_stripos($text, $phrase) !== false;
+        }
+        return stripos($text, $phrase) !== false;
+    }
+
+    /**
+     * Add names, aliases, and tags from standard KG/QG tables.
+     *
+     * @param array $kgids
+     * @param array $qgids
+     * @return array
+     */
+    private static function practice_standard_tags(array $kgids, array $qgids): array {
+        global $DB;
+
+        $tags = [];
+        if (!empty($kgids) && self::table_exists('local_mathstate_std_kp')) {
+            [$insql, $params] = $DB->get_in_or_equal(self::unique_string_list($kgids), SQL_PARAMS_NAMED, 'stdkg');
+            $records = $DB->get_records_select(
+                'local_mathstate_std_kp',
+                "kg_id $insql",
+                $params,
+                '',
+                'kg_id,name,aliases_json,tags_json,chapter,section'
+            );
+            foreach ($records as $record) {
+                $tags[] = (string)$record->name;
+                $tags[] = (string)$record->chapter;
+                $tags[] = (string)$record->section;
+                $tags = array_merge($tags, self::decode_string_list((string)$record->aliases_json));
+                $tags = array_merge($tags, self::decode_string_list((string)$record->tags_json));
+            }
+        }
+
+        if (!empty($qgids) && self::table_exists('local_mathstate_std_qtype')) {
+            [$insql, $params] = $DB->get_in_or_equal(self::unique_string_list($qgids), SQL_PARAMS_NAMED, 'stdqg');
+            $records = $DB->get_records_select(
+                'local_mathstate_std_qtype',
+                "qg_id $insql",
+                $params,
+                '',
+                'qg_id,name,tags_json,chapter'
+            );
+            foreach ($records as $record) {
+                $tags[] = (string)$record->name;
+                $tags[] = (string)$record->chapter;
+                $tags = array_merge($tags, self::decode_string_list((string)$record->tags_json));
+            }
+        }
+
+        return self::unique_string_list($tags);
+    }
+
+    /**
+     * Derive searchable tags from a Moodle resource or activity title.
+     *
+     * @param string $title
+     * @return array
+     */
+    private static function practice_title_tags(string $title): array {
+        $title = trim(str_replace(['视频课', '课后测试', '课后练习'], '', $title));
+        if ($title === '') {
+            return [];
+        }
+        $tags = [$title];
+        $parts = preg_split('/[\s;；,，、:：()（）\-]+/u', $title, 0, PREG_SPLIT_NO_EMPTY);
+        foreach ($parts ?: [] as $part) {
+            $part = trim(preg_replace('/^\d+(\.\d+)?/u', '', (string)$part));
+            if ($part !== '') {
+                $tags[] = $part;
+            }
+        }
+        return self::unique_string_list($tags);
+    }
+
+    /**
+     * Load resource-map facts for a course resource.
+     *
+     * @param int $courseid
+     * @param int $cmid
+     * @param string $lessonkey
+     * @return array
+     */
+    private static function practice_resource_map_facts(int $courseid, int $cmid, string $lessonkey): array {
+        global $DB;
+
+        $facts = [
+            'kg_ids' => [],
+            'qg_ids' => [],
+            'lesson_keys' => [],
+            'resources' => [],
+        ];
+
+        if (!self::table_exists('local_oc_shell_resource_map')) {
+            return $facts;
+        }
+
+        $where = ['courseid = :courseid'];
+        $params = ['courseid' => $courseid];
+        if ($cmid > 0) {
+            $where[] = 'cmid = :cmid';
+            $params['cmid'] = $cmid;
+        }
+        if ($lessonkey !== '') {
+            $where[] = 'lesson_key = :lessonkey';
+            $params['lessonkey'] = $lessonkey;
+        }
+
+        $records = $DB->get_records_select(
+            'local_oc_shell_resource_map',
+            implode(' AND ', $where),
+            $params,
+            'cmid ASC, id ASC',
+            'id,courseid,cmid,title,lesson_key,kg_ids_json,qg_ids_json,review_status'
+        );
+
+        foreach ($records as $record) {
+            $kgids = self::decode_string_list((string)$record->kg_ids_json);
+            $qgids = self::decode_string_list((string)$record->qg_ids_json);
+            $facts['kg_ids'] = array_merge($facts['kg_ids'], $kgids);
+            $facts['qg_ids'] = array_merge($facts['qg_ids'], $qgids);
+            if (!empty($record->lesson_key)) {
+                $facts['lesson_keys'][] = (string)$record->lesson_key;
+            }
+            $facts['resources'][] = [
+                'id' => (int)$record->id,
+                'courseid' => (int)$record->courseid,
+                'cmid' => (int)$record->cmid,
+                'title' => (string)$record->title,
+                'lesson_key' => (string)$record->lesson_key,
+                'kg_ids' => $kgids,
+                'qg_ids' => $qgids,
+                'review_status' => (string)$record->review_status,
+            ];
+        }
+
+        $facts['kg_ids'] = self::unique_string_list($facts['kg_ids']);
+        $facts['qg_ids'] = self::unique_string_list($facts['qg_ids']);
+        $facts['lesson_keys'] = self::unique_string_list($facts['lesson_keys']);
+        return $facts;
+    }
+
+    /**
+     * Pick mapped questions for a practice quiz.
+     *
+     * @param \stdClass $course
+     * @param array $categoryids
+     * @param array $kgids
+     * @param array $qgids
+     * @param array $tags
+     * @param int $limit
+     * @param int $seed
+     * @return array
+     */
+    private static function practice_pick_questions(
+        \stdClass $course,
+        array $categoryids,
+        array $kgids,
+        array $qgids,
+        array $tags,
+        int $limit,
+        int $seed
+    ): array {
+        global $DB;
+
+        $contextids = self::course_question_context_ids($course);
+        if (empty($contextids)) {
+            return [];
+        }
+
+        [$contextsql, $contextparams] = $DB->get_in_or_equal($contextids, SQL_PARAMS_NAMED, 'ctx');
+        $categorywhere = "qc.contextid $contextsql";
+        $params = $contextparams;
+        $categoryids = array_values(array_unique(array_filter(array_map('intval', $categoryids), static function($value): bool {
+            return $value > 0;
+        })));
+        if (!empty($categoryids)) {
+            [$categorysql, $categoryparams] = $DB->get_in_or_equal($categoryids, SQL_PARAMS_NAMED, 'pcat');
+            $categorywhere = "qbe.questioncategoryid $categorysql";
+            $params = $categoryparams;
+        }
+
+        $where = [
+            $categorywhere,
+            'q.parent = 0',
+            "qv.status = 'ready'",
+            'NOT EXISTS (
+                SELECT 1
+                  FROM {question_versions} qv2
+                 WHERE qv2.questionbankentryid = qv.questionbankentryid
+                   AND qv.version < qv2.version
+            )',
+        ];
+
+        $criteria = [];
+        $qgids = self::unique_string_list($qgids);
+        if (!empty($qgids) && self::table_exists('local_mathstate_question_map')) {
+            [$qgsql, $qgparams] = $DB->get_in_or_equal($qgids, SQL_PARAMS_NAMED, 'qg');
+            $criteria[] = "qm.qg_id $qgsql";
+            $params = array_merge($params, $qgparams);
+        }
+
+        $kgids = self::unique_string_list($kgids);
+        if (!empty($kgids) && self::table_exists('local_mathstate_question_map')) {
+            $kgparts = [];
+            foreach ($kgids as $index => $kgid) {
+                $key = 'kg' . $index;
+                $kgparts[] = $DB->sql_like('qm.kg_ids_json', ':' . $key, false, false);
+                $params[$key] = '%' . $kgid . '%';
+            }
+            if (!empty($kgparts)) {
+                $criteria[] = '(' . implode(' OR ', $kgparts) . ')';
+            }
+        }
+
+        $tags = self::unique_string_list($tags);
+        if (!empty($tags)) {
+            $tagparts = [];
+            foreach ($tags as $index => $tag) {
+                $key = 'tag' . $index;
+                $tagparts[] = $DB->sql_like('q.name', ':' . $key, false, false);
+                $tagparts[] = $DB->sql_like('q.questiontext', ':' . $key . 't', false, false);
+                $params[$key] = '%' . $tag . '%';
+                $params[$key . 't'] = '%' . $tag . '%';
+            }
+            $criteria[] = '(' . implode(' OR ', $tagparts) . ')';
+        }
+
+        if (!empty($criteria)) {
+            $where[] = '(' . implode(' OR ', $criteria) . ')';
+        }
+
+        $hasquestionmap = self::table_exists('local_mathstate_question_map');
+        $mapsql = $hasquestionmap
+            ? 'LEFT JOIN {local_mathstate_question_map} qm ON qm.questionid = q.id'
+            : '';
+        $mapselect = $hasquestionmap ? 'qm.qg_id, qm.kg_ids_json' : "'' AS qg_id, '' AS kg_ids_json";
+        $sql = "SELECT q.id, q.name, q.questiontext, q.qtype, q.defaultmark, qbe.questioncategoryid, qc.contextid, $mapselect
+                  FROM {question} q
+                  JOIN {question_versions} qv ON qv.questionid = q.id
+                  JOIN {question_bank_entries} qbe ON qbe.id = qv.questionbankentryid
+                  JOIN {question_categories} qc ON qc.id = qbe.questioncategoryid
+             $mapsql
+                 WHERE (" . implode(') AND (', $where) . ')
+              ORDER BY q.timemodified DESC, q.id DESC';
+
+        $records = array_values($DB->get_records_sql($sql, $params, 0, max($limit * 4, 50)));
+        if ($seed > 0) {
+            mt_srand($seed);
+            shuffle($records);
+        }
+
+        $scored = [];
+        foreach ($records as $record) {
+            $score = 0;
+            $recordqgid = (string)($record->qg_id ?? '');
+            if ($recordqgid !== '' && in_array($recordqgid, $qgids, true)) {
+                $score += 100;
+            }
+            $recordkgids = self::decode_string_list((string)($record->kg_ids_json ?? ''));
+            if (!empty(array_intersect($recordkgids, $kgids))) {
+                $score += 80;
+            }
+            foreach ($tags as $tag) {
+                if (self::practice_text_contains((string)$record->name, $tag)) {
+                    $score += 30;
+                } else if (self::practice_text_contains((string)$record->questiontext, $tag)) {
+                    $score += 5;
+                }
+            }
+            if ($score <= 0 && (!empty($criteria))) {
+                continue;
+            }
+            $record->_practice_score = $score;
+            $scored[] = $record;
+        }
+
+        usort($scored, static function($a, $b): int {
+            return [(int)$b->_practice_score, (int)$b->id] <=> [(int)$a->_practice_score, (int)$a->id];
+        });
+
+        $picked = [];
+        foreach ($scored as $record) {
+            $qcontext = \context::instance_by_id((int)$record->contextid, MUST_EXIST);
+            require_capability('moodle/question:useall', $qcontext);
+            $picked[] = [
+                'id' => (int)$record->id,
+                'name' => (string)$record->name,
+                'qtype' => (string)$record->qtype,
+                'categoryid' => (int)$record->questioncategoryid,
+                'defaultmark' => (float)$record->defaultmark,
+                'qg_id' => (string)($record->qg_id ?? ''),
+                'kg_ids' => self::decode_string_list((string)($record->kg_ids_json ?? '')),
+            ];
+            if (count($picked) >= $limit) {
+                break;
+            }
+        }
+        return $picked;
+    }
+
+    /**
+     * Empty practice quiz payload used when validation fails before selection.
+     *
+     * @param array $params
+     * @return array
+     */
+    private static function empty_practice_quiz_payload(array $params): array {
+        return [
+            'courseid' => (int)($params['courseid'] ?? 0),
+            'cmid' => (int)($params['cmid'] ?? 0),
+            'lesson_key' => trim((string)($params['lesson_key'] ?? '')),
+            'quizid' => 0,
+            'quiz_cmid' => 0,
+            'title' => trim((string)($params['title'] ?? '')),
+            'url' => '',
+            'section' => max(0, (int)($params['section'] ?? 0)),
+            'selection_mode' => (string)($params['selection_mode'] ?? 'fixed'),
+            'requested_count' => (int)($params['count'] ?? 0),
+            'created_count' => 0,
+            'visible' => !empty($params['visible']),
+            'questions' => [],
+            'resource_map' => [
+                'kg_ids' => [],
+                'qg_ids' => [],
+                'lesson_keys' => [],
+                'resources' => [],
+            ],
+            'available' => 0,
+            'requested' => (int)($params['count'] ?? 0),
+        ];
+    }
+
+    /**
+     * Parameters for practice_quiz_create_from_resource.
+     *
+     * @return external_function_parameters
+     */
+    public static function practice_quiz_create_from_resource_parameters(): external_function_parameters {
+        return new external_function_parameters([
+            'idempotency_key' => new external_value(PARAM_ALPHANUMEXT, 'Client-provided idempotency key', VALUE_REQUIRED),
+            'courseid' => new external_value(PARAM_INT, 'Target Moodle course id', VALUE_REQUIRED),
+            'cmid' => new external_value(PARAM_INT, 'Optional lesson/resource cmid', VALUE_DEFAULT, 0),
+            'lesson_key' => new external_value(PARAM_RAW, 'Optional lesson key', VALUE_DEFAULT, ''),
+            'title' => new external_value(PARAM_TEXT, 'Optional quiz title', VALUE_DEFAULT, ''),
+            'count' => new external_value(PARAM_INT, 'Number of questions to add, max 120', VALUE_DEFAULT, 5),
+            'section' => new external_value(PARAM_INT, 'Course section number, 0 means infer/default', VALUE_DEFAULT, 0),
+            'categoryid' => new external_value(PARAM_INT, 'Optional question category id', VALUE_DEFAULT, 0),
+            'kg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'KG id'), 'KG ids', VALUE_DEFAULT, []),
+            'qg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'QG id'), 'QG ids', VALUE_DEFAULT, []),
+            'tags' => new external_multiple_structure(new external_value(PARAM_RAW, 'Text tag'), 'Fallback text tags', VALUE_DEFAULT, []),
+            'seed' => new external_value(PARAM_INT, 'Optional random seed', VALUE_DEFAULT, 0),
+            'allow_partial' => new external_value(PARAM_BOOL, 'Create with fewer than count questions when necessary', VALUE_DEFAULT, false),
+            'selection_mode' => new external_value(PARAM_ALPHANUMEXT, 'fixed or random_category', VALUE_DEFAULT, 'fixed'),
+            'visible' => new external_value(PARAM_BOOL, 'Make the created quiz visible to students', VALUE_DEFAULT, false),
+            'dry_run' => new external_value(PARAM_BOOL, 'Preview only', VALUE_DEFAULT, false),
+            'reason' => new external_value(PARAM_TEXT, 'Optional audit reason', VALUE_DEFAULT, ''),
+            'categoryids' => new external_multiple_structure(new external_value(PARAM_INT, 'Question category id'), 'Extra question category ids', VALUE_DEFAULT, []),
+        ]);
+    }
+
+    /**
+     * Create a post-lesson practice quiz from existing mapped question-bank questions.
+     *
+     * @return array
+     */
+    public static function practice_quiz_create_from_resource(
+        string $idempotency_key,
+        int $courseid,
+        int $cmid = 0,
+        string $lesson_key = '',
+        string $title = '',
+        int $count = 5,
+        int $section = 0,
+        int $categoryid = 0,
+        array $kg_ids = [],
+        array $qg_ids = [],
+        array $tags = [],
+        int $seed = 0,
+        bool $allow_partial = false,
+        string $selection_mode = 'fixed',
+        bool $visible = false,
+        bool $dry_run = false,
+        string $reason = '',
+        array $categoryids = []
+    ): array {
+        global $DB, $USER, $CFG;
+
+        $params = self::validate_parameters(self::practice_quiz_create_from_resource_parameters(), [
+            'idempotency_key' => $idempotency_key,
+            'courseid' => $courseid,
+            'cmid' => $cmid,
+            'lesson_key' => $lesson_key,
+            'title' => $title,
+            'count' => $count,
+            'section' => $section,
+            'categoryid' => $categoryid,
+            'kg_ids' => $kg_ids,
+            'qg_ids' => $qg_ids,
+            'tags' => $tags,
+            'seed' => $seed,
+            'allow_partial' => $allow_partial,
+            'selection_mode' => $selection_mode,
+            'visible' => $visible,
+            'dry_run' => $dry_run,
+            'reason' => $reason,
+            'categoryids' => $categoryids,
+        ]);
+
+        $action = 'practice_quiz_create_from_resource';
+        $auditid = self::uuid_v4();
+        $requesthash = self::request_hash($params);
+        $replay = self::idempotency_replay_or_error($USER->id, $action, $params['idempotency_key'], $requesthash, (bool)$params['dry_run'], $params);
+        if ($replay !== null) {
+            return $replay;
+        }
+        $errorpayload = self::empty_practice_quiz_payload($params);
+
+        try {
+            self::restricted_context();
+            $count = (int)$params['count'];
+            if ($count < 1 || $count > self::MAX_PRACTICE_QUIZ_QUESTIONS) {
+                $response = self::response_error(
+                    $auditid,
+                    'invalid_count',
+                    'count must be between 1 and ' . self::MAX_PRACTICE_QUIZ_QUESTIONS . '.',
+                    (bool)$params['dry_run'],
+                    false,
+                    $errorpayload
+                );
+                self::audit($USER->id, $action, false, $auditid, $params, $response);
+                return $response;
+            }
+            $selectionmode = (string)$params['selection_mode'];
+            if (!in_array($selectionmode, ['fixed', 'random_category'], true)) {
+                throw new \invalid_parameter_exception('selection_mode must be fixed or random_category.');
+            }
+            $questioncategoryids = array_values(array_unique(array_filter(array_map('intval', array_merge(
+                [(int)$params['categoryid']],
+                (array)($params['categoryids'] ?? [])
+            )), static function($value): bool {
+                return $value > 0;
+            })));
+
+            $course = $DB->get_record('course', ['id' => (int)$params['courseid']], '*', MUST_EXIST);
+            $coursecontext = \context_course::instance((int)$course->id);
+            self::validate_context($coursecontext);
+            require_capability('moodle/course:view', $coursecontext);
+            require_capability('moodle/course:manageactivities', $coursecontext);
+            require_capability('mod/quiz:addinstance', $coursecontext);
+
+            $targetcm = null;
+            if (!empty($params['cmid'])) {
+                [$cmcourse, $cm] = get_course_and_cm_from_cmid((int)$params['cmid']);
+                if ((int)$cmcourse->id !== (int)$course->id) {
+                    throw new \invalid_parameter_exception('cmid does not belong to courseid.');
+                }
+                $targetcm = $cm;
+                if (empty($params['section'])) {
+                    $params['section'] = (int)$cm->sectionnum;
+                }
+            }
+
+            $facts = self::practice_resource_map_facts((int)$course->id, (int)$params['cmid'], trim((string)$params['lesson_key']));
+            $kgids = self::unique_string_list(array_merge($facts['kg_ids'], $params['kg_ids']));
+            $qgids = self::unique_string_list(array_merge($facts['qg_ids'], $params['qg_ids']));
+            $tags = self::unique_string_list($params['tags']);
+            $tags = self::unique_string_list(array_merge($tags, self::practice_standard_tags($kgids, $qgids)));
+            if (empty($tags) && $targetcm) {
+                $tags = self::practice_title_tags((string)$targetcm->name);
+            }
+
+            $questions = self::practice_pick_questions(
+                $course,
+                $questioncategoryids,
+                $kgids,
+                $qgids,
+                $tags,
+                $count,
+                (int)$params['seed']
+            );
+            $payload = [
+                'courseid' => (int)$course->id,
+                'cmid' => (int)$params['cmid'],
+                'lesson_key' => trim((string)$params['lesson_key']),
+                'quizid' => 0,
+                'quiz_cmid' => 0,
+                'title' => '',
+                'url' => '',
+                'section' => max(0, (int)$params['section']),
+                'selection_mode' => $selectionmode,
+                'requested_count' => $count,
+                'created_count' => count($questions),
+                'visible' => (bool)$params['visible'],
+                'questions' => $questions,
+                'resource_map' => $facts,
+                'available' => count($questions),
+                'requested' => $count,
+            ];
+            $errorpayload = $payload;
+            if (count($questions) < $count && empty($params['allow_partial'])) {
+                $response = self::response_error(
+                    $auditid,
+                    'not_enough_questions',
+                    'Not enough mapped questions found for the requested practice quiz.',
+                    (bool)$params['dry_run'],
+                    false,
+                    $payload
+                );
+                self::audit($USER->id, $action, false, $auditid, $params, $response);
+                return $response;
+            }
+            if (empty($questions)) {
+                $response = self::response_error(
+                    $auditid,
+                    'no_questions',
+                    'No usable questions found for the requested practice quiz.',
+                    (bool)$params['dry_run'],
+                    false,
+                    $payload
+                );
+                self::audit($USER->id, $action, false, $auditid, $params, $response);
+                return $response;
+            }
+
+            $quiztitle = trim((string)$params['title']);
+            if ($quiztitle === '') {
+                $source = $targetcm ? (string)$targetcm->name : (string)$course->fullname;
+                $quiztitle = '课后练习 - ' . $source;
+            }
+            $sectionnum = max(0, (int)$params['section']);
+            $payload['title'] = $quiztitle;
+            $payload['section'] = $sectionnum;
+
+            if ($params['dry_run']) {
+                $response = self::response_ok($auditid, $payload, true);
+                self::audit($USER->id, $action, true, $auditid, $params, $response);
+                return $response;
+            }
+
+            $quiz = create_module((object)[
+                'modulename' => 'quiz',
+                'course' => (int)$course->id,
+                'section' => $sectionnum,
+                'visible' => !empty($params['visible']) ? 1 : 0,
+                'groupmode' => 0,
+                'groupingid' => 0,
+                'name' => $quiztitle,
+                'introeditor' => [
+                    'text' => 'Auto-created post-lesson practice quiz by local_aiagentapi.',
+                    'format' => FORMAT_HTML,
+                    'itemid' => 0,
+                ],
+                'timeopen' => 0,
+                'timeclose' => 0,
+                'timelimit' => 0,
+                'overduehandling' => 'autosubmit',
+                'graceperiod' => 0,
+                'preferredbehaviour' => 'deferredfeedback',
+                'canredoquestions' => 0,
+                'attempts' => 0,
+                'attemptonlast' => 0,
+                'grademethod' => QUIZ_GRADEHIGHEST,
+                'decimalpoints' => 2,
+                'questiondecimalpoints' => -1,
+                'reviewattempt' => 1,
+                'reviewcorrectness' => 1,
+                'reviewmarks' => 1,
+                'reviewspecificfeedback' => 1,
+                'reviewgeneralfeedback' => 1,
+                'reviewrightanswer' => 1,
+                'reviewoverallfeedback' => 0,
+                'questionsperpage' => min(5, max(1, count($questions))),
+                'navmethod' => QUIZ_NAVMETHOD_FREE,
+                'shuffleanswers' => 1,
+                'sumgrades' => 0,
+                'grade' => max(1, count($questions)),
+                'quizpassword' => '',
+                'subnet' => '',
+                'browsersecurity' => '',
+                'delay1' => 0,
+                'delay2' => 0,
+                'showuserpicture' => 0,
+                'showblocks' => 0,
+                'completion' => COMPLETION_TRACKING_MANUAL,
+            ]);
+            $createdcm = get_coursemodule_from_instance('quiz', (int)$quiz->id, (int)$course->id, false, MUST_EXIST);
+            $quiz->cmid = (int)$createdcm->id;
+
+            foreach ($questions as $question) {
+                if ($selectionmode === 'fixed') {
+                    quiz_add_quiz_question((int)$question['id'], $quiz, 0, max(1.0, (float)$question['defaultmark']));
+                }
+            }
+            if ($selectionmode === 'random_category') {
+                $categorycounts = [];
+                foreach ($questions as $question) {
+                    $qid = (int)$question['categoryid'];
+                    $categorycounts[$qid] = (int)($categorycounts[$qid] ?? 0) + 1;
+                }
+                arsort($categorycounts);
+                $randomcategoryids = array_values(array_filter(array_map('intval', array_keys($categorycounts))));
+                if (empty($randomcategoryids)) {
+                    throw new \moodle_exception('No question category available for random practice quiz.');
+                }
+                $payload['random_categoryid'] = (int)$randomcategoryids[0];
+                $payload['random_categoryids'] = $randomcategoryids;
+                $quizstructure = \mod_quiz\quiz_settings::create((int)$quiz->id)->get_structure();
+                foreach ($categorycounts as $randomcategoryid => $slotcount) {
+                    $filtercondition = [
+                        'filter' => [
+                            'category' => [
+                                'jointype' => \core_question\local\bank\condition::JOINTYPE_DEFAULT,
+                                'values' => [(int)$randomcategoryid],
+                                'filteroptions' => ['includesubcategories' => false],
+                            ],
+                        ],
+                    ];
+                    $quizstructure->add_random_questions(0, (int)$slotcount, $filtercondition);
+                }
+            }
+            \mod_quiz\quiz_settings::create((int)$quiz->id)->get_grade_calculator()->recompute_quiz_sumgrades();
+
+            $payload['quizid'] = (int)$quiz->id;
+            $payload['quiz_cmid'] = (int)$createdcm->id;
+            $payload['url'] = $CFG->wwwroot . '/mod/quiz/view.php?id=' . (int)$createdcm->id;
+
+            $response = self::response_ok($auditid, $payload);
+            self::audit($USER->id, $action, true, $auditid, $params, $response);
+            self::store_idempotent_response($USER->id, $action, $params['idempotency_key'], $requesthash, $response);
+            return $response;
+        } catch (\Throwable $e) {
+            $response = self::response_error(
+                $auditid,
+                'practice_quiz_create_failed',
+                $e->getMessage(),
+                (bool)$params['dry_run'],
+                false,
+                $errorpayload
+            );
+            self::audit($USER->id, $action, false, $auditid, $params, $response);
+            return $response;
+        }
+    }
+
+    /**
+     * Returns for practice_quiz_create_from_resource.
+     *
+     * @return \core_external\external_description
+     */
+    public static function practice_quiz_create_from_resource_returns(): \core_external\external_description {
+        $questionstructure = new external_single_structure([
+            'id' => new external_value(PARAM_INT, 'Question id'),
+            'name' => new external_value(PARAM_RAW, 'Question name'),
+            'qtype' => new external_value(PARAM_TEXT, 'Question type'),
+            'categoryid' => new external_value(PARAM_INT, 'Question category id'),
+            'defaultmark' => new external_value(PARAM_FLOAT, 'Default mark'),
+            'qg_id' => new external_value(PARAM_RAW, 'Mapped QG id'),
+            'kg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'KG id')),
+        ]);
+        $resourcestructure = new external_single_structure([
+            'id' => new external_value(PARAM_INT, 'Resource map id'),
+            'courseid' => new external_value(PARAM_INT, 'Course id'),
+            'cmid' => new external_value(PARAM_INT, 'Resource cmid'),
+            'title' => new external_value(PARAM_RAW, 'Resource title'),
+            'lesson_key' => new external_value(PARAM_RAW, 'Lesson key'),
+            'kg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'KG id')),
+            'qg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'QG id')),
+            'review_status' => new external_value(PARAM_RAW, 'Review status'),
+        ]);
+        return self::envelope_returns(
+            new external_single_structure([
+                'courseid' => new external_value(PARAM_INT, 'Course id'),
+                'cmid' => new external_value(PARAM_INT, 'Source cmid'),
+                'lesson_key' => new external_value(PARAM_RAW, 'Lesson key'),
+                'quizid' => new external_value(PARAM_INT, 'Created quiz id, 0 for dry-run'),
+                'quiz_cmid' => new external_value(PARAM_INT, 'Created quiz cmid, 0 for dry-run'),
+                'title' => new external_value(PARAM_RAW, 'Quiz title'),
+                'url' => new external_value(PARAM_RAW, 'Quiz URL'),
+                'section' => new external_value(PARAM_INT, 'Course section number'),
+                'selection_mode' => new external_value(PARAM_ALPHANUMEXT, 'Question selection mode'),
+                'requested_count' => new external_value(PARAM_INT, 'Requested question count'),
+                'created_count' => new external_value(PARAM_INT, 'Created/selected question count'),
+                'visible' => new external_value(PARAM_BOOL, 'Whether the created quiz is visible'),
+                'random_categoryid' => new external_value(PARAM_INT, 'Random question category id', VALUE_OPTIONAL),
+                'random_categoryids' => new external_multiple_structure(new external_value(PARAM_INT, 'Random question category id'), 'Random question category ids', VALUE_OPTIONAL),
+                'questions' => new external_multiple_structure($questionstructure),
+                'resource_map' => new external_single_structure([
+                    'kg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'KG id')),
+                    'qg_ids' => new external_multiple_structure(new external_value(PARAM_RAW, 'QG id')),
+                    'lesson_keys' => new external_multiple_structure(new external_value(PARAM_RAW, 'Lesson key')),
+                    'resources' => new external_multiple_structure($resourcestructure),
+                ]),
+                'available' => new external_value(PARAM_INT, 'Available question count for error responses', VALUE_OPTIONAL),
+                'requested' => new external_value(PARAM_INT, 'Requested question count for error responses', VALUE_OPTIONAL),
             ])
         );
     }

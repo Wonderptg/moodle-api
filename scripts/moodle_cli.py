@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Agent-friendly Moodle CLI wrapper for local_aiagentapi.
+Agent-friendly remote Moodle WebService CLI wrapper for local_aiagentapi.
+
+This script is a Python client for /webservice/rest/server.php. It does not
+load Moodle config.php and does not need to run from a Moodle server checkout.
+PHP scripts in scripts/*.php are the separate Moodle maintenance path.
 
 Design goals:
 - strong root contract
@@ -19,6 +23,7 @@ import os
 import platform
 import re
 import subprocess
+import ssl
 import sys
 import time
 import urllib.error
@@ -173,6 +178,36 @@ def normalize_profile_name(name: str) -> str:
             EXIT_USAGE,
         )
     return value
+
+
+def login_setup_hint(profile_name: str = DEFAULT_PROFILE_NAME, base_url: str = "") -> str:
+    profile_name = normalize_profile_name(profile_name)
+    setup_cmd = f"moodle setup --name {profile_name}"
+    if base_url:
+        setup_cmd += f" --base-url {normalize_base_url(base_url)}"
+    else:
+        setup_cmd += " --base-url <moodle-url>"
+    return (
+        "Run:\n"
+        f"  {setup_cmd}\n"
+        f"  moodle login --name {profile_name}\n"
+        f"  moodle status --name {profile_name}\n"
+        "Or set MOODLE_BASE_URL and MOODLE_WS_TOKEN in --env-file .env.local."
+    )
+
+
+def missing_base_url_error(profile_name: str = DEFAULT_PROFILE_NAME) -> CliError:
+    return CliError(
+        "missing Moodle base URL.\n" + login_setup_hint(profile_name),
+        EXIT_CONFIG,
+    )
+
+
+def missing_token_error(profile_name: str = DEFAULT_PROFILE_NAME, base_url: str = "") -> CliError:
+    return CliError(
+        "not logged in: missing Moodle web-service token.\n" + login_setup_hint(profile_name, base_url),
+        EXIT_CONFIG,
+    )
 
 
 def load_cli_config(config_dir: str) -> Dict[str, Any]:
@@ -385,6 +420,34 @@ def prompt_text(label: str, *, default: str = "", secret: bool = False) -> str:
     return value or default
 
 
+_URL_OPEN_CONTEXT: Optional[ssl.SSLContext] = None
+_URL_OPEN_CONTEXT_READY = False
+
+
+def default_https_context() -> Optional[ssl.SSLContext]:
+    """Use certifi when available so Python framework builds trust LE certs."""
+    global _URL_OPEN_CONTEXT, _URL_OPEN_CONTEXT_READY
+    if _URL_OPEN_CONTEXT_READY:
+        return _URL_OPEN_CONTEXT
+    _URL_OPEN_CONTEXT_READY = True
+    if os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE"):
+        return None
+    try:
+        import certifi  # type: ignore
+
+        _URL_OPEN_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        _URL_OPEN_CONTEXT = None
+    return _URL_OPEN_CONTEXT
+
+
+def open_url(req: urllib.request.Request, *, timeout: float):
+    context = default_https_context()
+    if context is None:
+        return urllib.request.urlopen(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout, context=context)
+
+
 def resolve_target_profile(args: argparse.Namespace) -> str:
     return normalize_profile_name(getattr(args, "profile_name", "") or args.profile)
 
@@ -405,7 +468,7 @@ def request_login_token(
     req = urllib.request.Request(endpoint, method="POST", data=payload)
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_url(req, timeout=timeout) as resp:
             raw = resp.read()
             status = resp.status
     except urllib.error.HTTPError as e:
@@ -449,7 +512,7 @@ def request_device_authorization(base_url: str, service: str, timeout: float) ->
     req = urllib.request.Request(endpoint, method="POST", data=payload)
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_url(req, timeout=timeout) as resp:
             raw = resp.read()
             status = resp.status
     except urllib.error.HTTPError as e:
@@ -480,7 +543,7 @@ def poll_device_authorization_once(base_url: str, device_code: str, timeout: flo
     req = urllib.request.Request(endpoint, method="POST", data=payload)
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_url(req, timeout=timeout) as resp:
             raw = resp.read()
             status = resp.status
     except urllib.error.HTTPError as e:
@@ -532,7 +595,7 @@ def verify_profile_session(base_url: str, token: str, timeout: float) -> Dict[st
 def probe_url(url: str, timeout: float, *, method: str = "GET") -> Tuple[bool, str]:
     req = urllib.request.Request(url, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_url(req, timeout=timeout) as resp:
             return True, f"HTTP {resp.status}"
     except urllib.error.HTTPError as e:
         if e.code < 500:
@@ -694,7 +757,7 @@ def invoke_ws(base_url: str, token: str, wsfunction: str, params: Dict[str, Any]
     req = urllib.request.Request(endpoint, method="POST", data=data)
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_url(req, timeout=timeout) as resp:
             raw = resp.read()
             status = resp.status
     except urllib.error.HTTPError as e:
@@ -1242,6 +1305,75 @@ def normalize_question_item(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def blank_question_explanation() -> Dict[str, str]:
+    return {
+        "general_feedback_html": "",
+        "general_feedback_plain": "",
+        "correct_feedback_html": "",
+        "correct_feedback_plain": "",
+        "partially_correct_feedback_html": "",
+        "partially_correct_feedback_plain": "",
+        "incorrect_feedback_html": "",
+        "incorrect_feedback_plain": "",
+    }
+
+
+def hide_answer_correction(answer: Dict[str, Any]) -> Dict[str, Any]:
+    sanitized = dict(answer)
+    if "fraction" in sanitized:
+        sanitized["fraction"] = 0
+    if "is_correct" in sanitized:
+        sanitized["is_correct"] = False
+    if "feedback_html" in sanitized:
+        sanitized["feedback_html"] = ""
+    if "feedback_plain" in sanitized:
+        sanitized["feedback_plain"] = ""
+    return sanitized
+
+
+def hide_question_correction(item: Dict[str, Any]) -> Dict[str, Any]:
+    sanitized = dict(item)
+    sanitized["correct_labels"] = []
+    sanitized["explanation"] = blank_question_explanation()
+    sanitized["answers"] = [
+        hide_answer_correction(answer)
+        for answer in list(item.get("answers") or [])
+        if isinstance(answer, dict)
+    ]
+    return sanitized
+
+
+def normalize_question_detail_item(
+    search_item: Dict[str, Any],
+    render_item: Optional[Dict[str, Any]],
+    *,
+    include_correction: bool = True,
+) -> Dict[str, Any]:
+    question = normalize_question_item(search_item)
+    question["resource_type"] = "question_detail"
+    question["detail_available"] = render_item is not None
+    if not render_item:
+        return question
+
+    if not question["title"]:
+        question["title"] = str(render_item.get("name") or "")
+    if not question["kind"]:
+        question["kind"] = str(render_item.get("qtype") or "")
+
+    question["content"] = {
+        "text_html": str(render_item.get("text_html") or ""),
+        "text_plain": str(render_item.get("text_plain") or ""),
+        "html": str(render_item.get("html") or ""),
+        "plain": str(render_item.get("plain") or ""),
+    }
+    visible_item = render_item if include_correction else hide_question_correction(render_item)
+    question["answers"] = list(visible_item.get("answers") or [])
+    question["correct_labels"] = list(visible_item.get("correct_labels") or [])
+    explanation = visible_item.get("explanation") if isinstance(visible_item.get("explanation"), dict) else {}
+    question["explanation"] = {**blank_question_explanation(), **explanation}
+    return question
+
+
 def normalize_activity_detail_item(item: Dict[str, Any]) -> Dict[str, Any]:
     normalized = normalize_activity_item(item, resource_type="activity")
     normalized["content"] = {
@@ -1636,6 +1768,78 @@ def transform_questions_search_result(value: Any) -> Any:
     )
 
 
+def transform_questions_search_details_result(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+
+    search_data = raw_data.get("search")
+    render_data = raw_data.get("render")
+    if not isinstance(search_data, dict) or not isinstance(render_data, dict):
+        return value
+
+    search_questions = [item for item in list(search_data.get("questions") or []) if isinstance(item, dict)]
+    rendered_by_id = {
+        safe_int(item.get("id")): item
+        for item in list(render_data.get("questions") or [])
+        if isinstance(item, dict) and safe_int(item.get("id")) > 0
+    }
+    include_correction = bool(raw_data.get("show_correction"))
+    questions = [
+        normalize_question_detail_item(
+            item,
+            rendered_by_id.get(safe_int(item.get("id"))),
+            include_correction=include_correction,
+        )
+        for item in search_questions
+    ]
+    rendered_count = sum(1 for item in questions if item.get("detail_available"))
+
+    return build_cli_envelope(
+        ok=bool(value.get("ok", True)),
+        identity="user",
+        data=with_items_alias(
+            {
+                "filters": raw_data.get("filters") if isinstance(raw_data.get("filters"), dict) else {},
+                "questions": questions,
+            },
+            "questions",
+        ),
+        meta={
+            "count": len(questions),
+            "rendered_count": rendered_count,
+            "primary_resource": "question_details",
+            "includes_correction": include_correction,
+            "includes_feedback": bool(raw_data.get("include_feedback")) and include_correction,
+        },
+        error=value.get("error") if isinstance(value.get("error"), dict) else None,
+    )
+
+
+def transform_questions_render_html_result(value: Any, args: argparse.Namespace) -> Any:
+    if getattr(args, "show_correction", False):
+        return value
+    if not isinstance(value, dict):
+        return value
+    raw_data = value.get("data")
+    if not isinstance(raw_data, dict):
+        return value
+    questions = raw_data.get("questions")
+    if not isinstance(questions, list):
+        return value
+
+    sanitized = dict(value)
+    sanitized_data = dict(raw_data)
+    sanitized_data["questions"] = [
+        hide_question_correction(item) if isinstance(item, dict) else item
+        for item in questions
+    ]
+    sanitized["data"] = sanitized_data
+    return sanitized
+
+
 def transform_activities_detail_result(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
@@ -1726,6 +1930,10 @@ def transform_extended_command_output(value: Any, args: argparse.Namespace) -> A
         return transform_notifications_list_result(value)
     if command_path_equals(args, ["questions", "search"]):
         return transform_questions_search_result(value)
+    if command_path_equals(args, ["questions", "search-details"]):
+        return transform_questions_search_details_result(value)
+    if command_path_equals(args, ["questions", "render-html"]):
+        return transform_questions_render_html_result(value, args)
     if command_path_equals(args, ["activities", "detail"]):
         return transform_activities_detail_result(value)
     if command_path_equals(args, ["quiz", "attempts"]):
@@ -1988,6 +2196,8 @@ def transform_output(value: Any, args: argparse.Namespace) -> Any:
         ("forum", "discussions"),
         ("notifications", "list"),
         ("questions", "search"),
+        ("questions", "search-details"),
+        ("questions", "render-html"),
         ("quiz", "attempts"),
         ("grades", "overview"),
         ("progress", "course"),
@@ -2252,8 +2462,58 @@ def command_questions_search(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
         "categoryid": args.category_id,
         "recurse": args.recurse,
         "qtypes": args.qtype or [],
+        "tagids": args.tag_id or [],
         "limit": args.limit,
+        "offset": args.offset,
     })
+
+
+def command_questions_search_details(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    if args.limit > 50:
+        raise CliError("questions search-details --limit must be <= 50", EXIT_USAGE)
+
+    search = command_questions_search(cli, args)
+    search_data = search.get("data") if isinstance(search, dict) else {}
+    if not isinstance(search_data, dict):
+        return search
+
+    search_questions = [item for item in list(search_data.get("questions") or []) if isinstance(item, dict)]
+    question_ids = []
+    for item in search_questions:
+        question_id = safe_int(item.get("id"))
+        if question_id > 0 and question_id not in question_ids:
+            question_ids.append(question_id)
+
+    render: Dict[str, Any] = {"ok": True, "data": {"questions": []}}
+    if question_ids:
+        render = cli.call("local_aiagentapi_questions_render_html", {
+            "question_ids": question_ids,
+            "shuffle_answers": args.shuffle_answers,
+            "seed": args.seed,
+            "show_correction": args.show_correction,
+            "include_feedback": args.include_feedback,
+        })
+
+    return {
+        "ok": bool(search.get("ok", True)) and bool(render.get("ok", True)),
+        "data": {
+            "filters": {
+                "query": args.query,
+                "courseid": args.course_id,
+                "categoryid": args.category_id,
+                "recurse": args.recurse,
+                "qtypes": args.qtype or [],
+                "tagids": args.tag_id or [],
+                "limit": args.limit,
+                "offset": args.offset,
+            },
+            "search": search_data,
+            "render": render.get("data") if isinstance(render.get("data"), dict) else {"questions": []},
+            "show_correction": args.show_correction,
+            "include_feedback": args.include_feedback,
+        },
+        "error": search.get("error") if not search.get("ok", True) else render.get("error"),
+    }
 
 
 def command_questions_pick_random(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
@@ -2272,6 +2532,7 @@ def command_questions_render_html(cli: "MoodleCLI", args: argparse.Namespace) ->
         "shuffle_answers": args.shuffle_answers,
         "seed": args.seed,
         "show_correction": args.show_correction,
+        "include_feedback": args.include_feedback,
     })
 
 
@@ -2288,6 +2549,36 @@ def command_quiz_list(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     return cli.call("local_aiagentapi_quiz_list_by_course", {
         "courseid": args.course_id,
     })
+
+
+def command_quiz_create_practice(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    confirm_write(args, "create practice quiz")
+    category_ids: list[int] = []
+    for category_id in args.category_id or []:
+        if category_id > 0 and category_id not in category_ids:
+            category_ids.append(category_id)
+    payload = {
+        "idempotency_key": args.idempotency_key,
+        "courseid": args.course_id,
+        "cmid": args.cmid,
+        "lesson_key": args.lesson_key,
+        "title": args.title,
+        "count": args.count,
+        "section": args.section,
+        "categoryid": category_ids[0] if category_ids else 0,
+        "kg_ids": args.kg_id or [],
+        "qg_ids": args.qg_id or [],
+        "tags": args.tag or [],
+        "seed": args.seed,
+        "allow_partial": args.allow_partial,
+        "selection_mode": "random_category" if args.random else args.selection_mode,
+        "visible": args.visible,
+        "dry_run": args.dry_run,
+        "reason": args.reason,
+    }
+    if len(category_ids) > 1:
+        payload["categoryids"] = category_ids
+    return cli.call("local_aiagentapi_practice_quiz_create_from_resource", payload)
 
 
 def command_quiz_attempts(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
@@ -2784,6 +3075,7 @@ def command_mathstate_student_summary(cli: "MoodleCLI", args: argparse.Namespace
         "include_kp_states": args.include_kp_states,
         "include_qtype_states": args.include_qtype_states,
         "include_due_tasks": args.include_due_tasks,
+        "include_video_progress": args.include_video_progress,
     })
 
 
@@ -2793,6 +3085,19 @@ def command_mathstate_reviews_due(cli: "MoodleCLI", args: argparse.Namespace) ->
         "userid": args.user_id,
         "limit": args.limit,
         "due_before": args.due_before,
+    })
+
+
+def command_mathstate_video_progress_summary(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    return cli.call("local_mathstate_video_progress_summary", {
+        "courseid": args.course_id,
+        "userid": args.user_id,
+        "session_key": args.session_key,
+        "lesson_key": args.lesson_key,
+        "cmid": args.cmid,
+        "resource_course_id": args.resource_course_id,
+        "resource_cmid": args.resource_cmid,
+        "limit": args.limit,
     })
 
 
@@ -3126,6 +3431,17 @@ def command_profile_rename(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     }
 
 
+def command_setup(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
+    args.activate = True
+    result = command_config_init(cli, args)
+    profile_name = resolve_target_profile(args)
+    result["next_steps"] = [
+        f"moodle login --name {profile_name}",
+        f"moodle status --name {profile_name}",
+    ]
+    return result
+
+
 def command_doctor(cli: "MoodleCLI", args: argparse.Namespace) -> Any:
     profile_name = args.profile
     profile = get_profile(args.cli_config, profile_name)
@@ -3286,9 +3602,9 @@ class MoodleCLI:
         base_url = self.args.base_url
         token = self.args.token
         if not base_url:
-            raise CliError("missing base url (set --base-url or MOODLE_BASE_URL)", EXIT_CONFIG)
+            raise missing_base_url_error(getattr(self.args, "profile", DEFAULT_PROFILE_NAME))
         if not token:
-            raise CliError("missing token (set --token or MOODLE_WS_TOKEN)", EXIT_CONFIG)
+            raise missing_token_error(getattr(self.args, "profile", DEFAULT_PROFILE_NAME), base_url)
         return invoke_ws(base_url, token, wsfunction, params, self.args.timeout)
 
 
@@ -3320,10 +3636,39 @@ def add_parser(subparsers: argparse._SubParsersAction, name: str, *, description
     return parser
 
 
+def add_connection_flags(parser: argparse.ArgumentParser, *, include_token: bool = False) -> None:
+    # default=SUPPRESS lets subcommand flags override root flags without clobbering them when absent.
+    parser.add_argument("--base-url", default=argparse.SUPPRESS, help="Moodle base URL")
+    parser.add_argument("--service", default=argparse.SUPPRESS, help=f"External service shortname (default: {DEFAULT_SERVICE_SHORTNAME})")
+    if include_token:
+        parser.add_argument("--token", default=argparse.SUPPRESS, help="Web service token")
+
+
 def build_parser() -> argparse.ArgumentParser:
+    epilog = """
+Execution model:
+  moodle_cli.py is a remote WebService client. It calls:
+    <base-url>/webservice/rest/server.php -> local_aiagentapi
+
+  It requires Python plus a Moodle base URL and web-service token/profile.
+  It does not require local PHP, public/config.php, or running from the Moodle
+  server code directory.
+
+  PHP scripts in scripts/*.php are different: they are Moodle maintenance
+  scripts and must run inside a Moodle code tree with PHP and config.php.
+
+Common paths:
+  Remote online quiz creation:
+    moodle --profile dzexam --json quiz create-practice ...
+
+  Moodle internal maintenance:
+    cd /srv/moodle/current && php scripts/register_aiagentapi_service_functions.php
+"""
     parser = argparse.ArgumentParser(
         prog="moodle",
-        description="Agent-friendly Moodle CLI over local_aiagentapi.",
+        description="Agent-friendly remote Moodle WebService CLI over local_aiagentapi.",
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser._aliases = []  # type: ignore[attr-defined]
     parser._command_name = "moodle"  # type: ignore[attr-defined]
@@ -3338,8 +3683,32 @@ def build_parser() -> argparse.ArgumentParser:
     exit_codes_parser.set_defaults(handler=command_exit_codes, command_path=["exit-codes"])
 
     doctor_parser = add_parser(subparsers, "doctor", description="Health check config, auth, and connectivity")
+    add_connection_flags(doctor_parser, include_token=True)
     doctor_parser.add_argument("--offline", action="store_true", help="Skip network checks")
     doctor_parser.set_defaults(handler=command_doctor, command_path=["doctor"])
+
+    setup_parser = add_parser(subparsers, "setup", description="Create and activate a Moodle CLI profile")
+    setup_parser.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(setup_parser)
+    setup_parser.set_defaults(handler=command_setup, command_path=["setup"])
+
+    login_parser = add_parser(subparsers, "login", description="Login via browser/device flow or username/password")
+    login_parser.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(login_parser)
+    login_parser.add_argument("--username", default="", help="Moodle username")
+    login_parser.add_argument("--password", default="", help="Moodle password (omit to prompt interactively)")
+    login_parser.add_argument("--device-code", default="", help="Resume polling with an existing device code")
+    login_parser.add_argument("--expires-in", type=int, default=0, help="Device code lifetime when resuming polling")
+    login_parser.add_argument("--interval", type=int, default=0, help="Device poll interval when resuming polling")
+    login_parser.add_argument("--no-wait", action="store_true", help="Start browser/device login and return device code immediately")
+    login_parser.add_argument("--no-browser", action="store_true", help="Do not attempt to open the browser automatically")
+    login_parser.set_defaults(handler=command_auth_login, command_path=["login"])
+
+    status_parser = add_parser(subparsers, "status", description="Show current Moodle CLI auth status")
+    status_parser.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(status_parser, include_token=True)
+    status_parser.add_argument("--offline", action="store_true", help="Do not verify against the server")
+    status_parser.set_defaults(handler=command_auth_status, command_path=["status"])
 
     config_parser = add_parser(subparsers, "config", description="CLI profile and config helpers")
     config_sub = config_parser.add_subparsers(dest="_config_command")
@@ -3351,6 +3720,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_show.set_defaults(handler=command_config_show, command_path=["config", "show"])
     config_init = add_parser(config_sub, "init", description="Create or update a profile")
     config_init.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(config_init)
     config_init.add_argument("--activate", action="store_true", help="Make this profile current")
     config_init.set_defaults(handler=command_config_init, command_path=["config", "init"])
     config_use = add_parser(config_sub, "use", description="Switch current profile")
@@ -3364,6 +3734,7 @@ def build_parser() -> argparse.ArgumentParser:
     auth_sub = auth_parser.add_subparsers(dest="_auth_command")
     auth_login = add_parser(auth_sub, "login", description="Login via browser/device flow or username/password")
     auth_login.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(auth_login)
     auth_login.add_argument("--username", default="", help="Moodle username")
     auth_login.add_argument("--password", default="", help="Moodle password (omit to prompt interactively)")
     auth_login.add_argument("--device-code", default="", help="Resume polling with an existing device code")
@@ -3376,6 +3747,7 @@ def build_parser() -> argparse.ArgumentParser:
     auth_list.set_defaults(handler=command_auth_list, command_path=["auth", "list"])
     auth_status = add_parser(auth_sub, "status", description="Show current auth status")
     auth_status.add_argument("--name", dest="profile_name", default="", help="Profile name (defaults to current/default profile)")
+    add_connection_flags(auth_status, include_token=True)
     auth_status.add_argument("--offline", action="store_true", help="Do not verify against the server")
     auth_status.set_defaults(handler=command_auth_status, command_path=["auth", "status"])
     auth_logout = add_parser(auth_sub, "logout", description="Remove the stored token from a profile")
@@ -3391,6 +3763,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_use.set_defaults(handler=command_profile_use, command_path=["profile", "use"])
     profile_add = add_parser(profile_sub, "add", description="Add a new profile")
     profile_add.add_argument("--name", dest="profile_name", required=True, help="Profile name")
+    add_connection_flags(profile_add)
     profile_add.add_argument("--use", action="store_true", help="Make the profile current after adding")
     profile_add.set_defaults(handler=command_profile_add, command_path=["profile", "add"])
     profile_remove = add_parser(profile_sub, "remove", description="Remove a profile", aliases=["rm", "delete"])
@@ -3479,8 +3852,36 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--category-id", type=int, default=0, help="Optional category id")
     search.add_argument("--recurse", action="store_true", help="Include subcategories when category is set")
     search.add_argument("--qtype", action="append", default=[], help="Question type to include (repeatable)")
+    search.add_argument("--tag-id", type=int, action="append", default=[], help="Moodle question tag id to require (repeatable)")
     search.add_argument("--limit", type=int, default=50, help="Maximum rows to return")
+    search.add_argument("--offset", type=int, default=0, help="Pagination offset")
     search.set_defaults(handler=command_questions_search, command_path=["questions", "search"])
+    search_details = add_parser(
+        questions_sub,
+        "search-details",
+        description="Search questions and render the returned page with answers",
+        aliases=["search-detail"],
+    )
+    search_details.add_argument("--query", default="", help="Optional search text")
+    search_details.add_argument("--course-id", type=int, default=0, help="Optional course id")
+    search_details.add_argument("--category-id", type=int, default=0, help="Optional category id")
+    search_details.add_argument("--recurse", action="store_true", help="Include subcategories when category is set")
+    search_details.add_argument("--qtype", action="append", default=[], help="Question type to include (repeatable)")
+    search_details.add_argument("--tag-id", type=int, action="append", default=[], help="Moodle question tag id to require (repeatable)")
+    search_details.add_argument("--limit", type=int, default=20, help="Maximum rows to return and render (max 50)")
+    search_details.add_argument("--offset", type=int, default=0, help="Pagination offset")
+    search_details.add_argument("--shuffle-answers", action="store_true", help="Shuffle answer order")
+    search_details.add_argument("--seed", type=int, default=0, help="Optional random seed")
+    search_details.add_argument("--show-correction", dest="show_correction", action="store_true", help="Include correct answer markers")
+    search_details.add_argument("--hide-correction", dest="show_correction", action="store_false", help="Hide correct answer markers and feedback")
+    search_details.add_argument("--include-feedback", dest="include_feedback", action="store_true", default=True, help="Include Moodle feedback fields when correction is shown")
+    search_details.add_argument("--hide-feedback", dest="include_feedback", action="store_false", help="Hide Moodle feedback fields")
+    search_details.set_defaults(
+        handler=command_questions_search_details,
+        command_path=["questions", "search-details"],
+        show_correction=True,
+        include_feedback=True,
+    )
     pick_random = add_parser(questions_sub, "pick-random", description="Pick random questions from a category", aliases=["pick"])
     pick_random.add_argument("--category-id", type=int, required=True, help="Question category id")
     pick_random.add_argument("--count", type=int, required=True, help="Number of questions to pick")
@@ -3494,6 +3895,8 @@ def build_parser() -> argparse.ArgumentParser:
     render_html.add_argument("--shuffle-answers", action="store_true", help="Shuffle answer order")
     render_html.add_argument("--seed", type=int, default=0, help="Optional random seed")
     render_html.add_argument("--show-correction", action="store_true", help="Include correct answer markers")
+    render_html.add_argument("--include-feedback", dest="include_feedback", action="store_true", default=True, help="Include Moodle feedback fields when correction is shown")
+    render_html.add_argument("--hide-feedback", dest="include_feedback", action="store_false", help="Hide Moodle feedback fields")
     render_html.set_defaults(handler=command_questions_render_html, command_path=["questions", "render-html"])
 
     quiz_parser = add_parser(subparsers, "quiz", description="Quiz helpers")
@@ -3501,6 +3904,29 @@ def build_parser() -> argparse.ArgumentParser:
     quiz_list = add_parser(quiz_sub, "list", description="List quizzes in a course", aliases=["ls"])
     quiz_list.add_argument("--course-id", type=int, required=True, help="Course id")
     quiz_list.set_defaults(handler=command_quiz_list, command_path=["quiz", "list"])
+    quiz_create_practice = add_parser(
+        quiz_sub,
+        "create-practice",
+        description="Create an online Moodle practice quiz through local_aiagentapi WebService from existing mapped questions",
+    )
+    quiz_create_practice.add_argument("--idempotency-key", required=True, help="Client idempotency key")
+    quiz_create_practice.add_argument("--course-id", type=int, required=True, help="Target course id")
+    quiz_create_practice.add_argument("--cmid", type=int, default=0, help="Optional lesson/resource cmid")
+    quiz_create_practice.add_argument("--lesson-key", default="", help="Optional lesson key")
+    quiz_create_practice.add_argument("--title", default="", help="Optional quiz title")
+    quiz_create_practice.add_argument("--count", type=int, default=5, help="Number of questions to add (max 120)")
+    quiz_create_practice.add_argument("--section", type=int, default=0, help="Course section number, 0 means infer/default")
+    quiz_create_practice.add_argument("--category-id", type=int, action="append", default=[], help="Optional question category id (repeatable)")
+    quiz_create_practice.add_argument("--kg-id", action="append", default=[], help="Additional KG id (repeatable)")
+    quiz_create_practice.add_argument("--qg-id", action="append", default=[], help="Additional QG id (repeatable)")
+    quiz_create_practice.add_argument("--tag", action="append", default=[], help="Fallback text tag (repeatable)")
+    quiz_create_practice.add_argument("--seed", type=int, default=0, help="Optional random seed")
+    quiz_create_practice.add_argument("--allow-partial", action="store_true", help="Create with fewer than count questions when necessary")
+    quiz_create_practice.add_argument("--selection-mode", choices=["fixed", "random_category"], default="fixed", help="Question selection mode")
+    quiz_create_practice.add_argument("--random", action="store_true", help="Shortcut for --selection-mode random_category")
+    quiz_create_practice.add_argument("--visible", action="store_true", help="Make the created quiz visible to students")
+    quiz_create_practice.add_argument("--reason", default="", help="Audit reason")
+    quiz_create_practice.set_defaults(handler=command_quiz_create_practice, command_path=["quiz", "create-practice"])
     quiz_attempts = add_parser(quiz_sub, "attempts", description="List my quiz attempts")
     quiz_attempts.add_argument("--course-id", type=int, default=0, help="Optional course id")
     quiz_attempts.add_argument("--quiz-id", type=int, default=0, help="Optional quiz id")
@@ -3793,6 +4219,8 @@ def build_parser() -> argparse.ArgumentParser:
     mathstate_summary.add_argument("--no-include-qtype-states", action="store_false", dest="include_qtype_states", help="Do not include question-type states")
     mathstate_summary.add_argument("--include-due-tasks", action="store_true", default=True, help="Include due tasks")
     mathstate_summary.add_argument("--no-include-due-tasks", action="store_false", dest="include_due_tasks", help="Do not include due tasks")
+    mathstate_summary.add_argument("--include-video-progress", action="store_true", default=True, help="Include aggregated video progress")
+    mathstate_summary.add_argument("--no-include-video-progress", action="store_false", dest="include_video_progress", help="Do not include aggregated video progress")
     mathstate_summary.set_defaults(handler=command_mathstate_student_summary, command_path=["mathstate", "student-summary"])
 
     mathstate_due = add_parser(mathstate_sub, "reviews-due", description="List due review tasks for a student")
@@ -3801,6 +4229,17 @@ def build_parser() -> argparse.ArgumentParser:
     mathstate_due.add_argument("--limit", type=int, default=50, help="Maximum tasks to return")
     mathstate_due.add_argument("--due-before", type=int, default=0, help="Upper due timestamp, 0 means now")
     mathstate_due.set_defaults(handler=command_mathstate_reviews_due, command_path=["mathstate", "reviews-due"])
+
+    mathstate_video = add_parser(mathstate_sub, "video-progress-summary", description="Show aggregated video progress from lesson sessions")
+    mathstate_video.add_argument("--course-id", type=int, required=True, help="Course id")
+    mathstate_video.add_argument("--user-id", type=int, default=0, help="User id, 0 means current token user")
+    mathstate_video.add_argument("--session-key", default="", help="Optional session key filter")
+    mathstate_video.add_argument("--lesson-key", default="", help="Optional lesson key filter")
+    mathstate_video.add_argument("--cmid", type=int, default=0, help="Optional lesson session cmid filter")
+    mathstate_video.add_argument("--resource-course-id", type=int, default=0, help="Optional video source course id filter")
+    mathstate_video.add_argument("--resource-cmid", type=int, default=0, help="Optional video source cmid filter")
+    mathstate_video.add_argument("--limit", type=int, default=50, help="Maximum items to return")
+    mathstate_video.set_defaults(handler=command_mathstate_video_progress_summary, command_path=["mathstate", "video-progress-summary"])
 
     return parser
 
