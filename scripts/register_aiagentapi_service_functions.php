@@ -1,5 +1,5 @@
 <?php
-// Register all local_aiagentapi external functions into a named external service.
+// Register local_aiagentapi and selected Moodle core external functions into a named external service.
 
 define('CLI_SCRIPT', true);
 
@@ -27,7 +27,7 @@ Register local_aiagentapi external functions into an external service.
 
 Options:
 --service-shortname  External service shortname (default: local_aiagentapi)
---function-prefix    Function name prefix to include (default: local_aiagentapi_)
+--function-prefix    Local function name prefix to include (default: local_aiagentapi_)
 -h, --help           Show this help
 
 TEXT;
@@ -79,12 +79,33 @@ if (!$service) {
     }
 }
 
+$coreviewfunctionnames = [
+    // These official functions trigger module view events and native completion viewed state.
+    'mod_page_view_page',
+    'mod_resource_view_resource',
+    'mod_quiz_view_quiz',
+];
+
 $functions = $DB->get_records_select(
     'external_functions',
     $DB->sql_like('name', '?'),
     [$options['function-prefix'] . '%'],
     'name ASC'
 );
+
+$missingcorefunctions = [];
+foreach ($coreviewfunctionnames as $functionname) {
+    if (isset($functions[$functionname])) {
+        continue;
+    }
+    $function = $DB->get_record('external_functions', ['name' => $functionname]);
+    if ($function) {
+        $functions[$functionname] = $function;
+        continue;
+    }
+    $missingcorefunctions[] = $functionname;
+}
+ksort($functions);
 
 $added = [];
 $existing = [];
@@ -112,4 +133,5 @@ echo json_encode([
     ],
     'added' => $added,
     'existing' => $existing,
+    'missing_core_functions' => $missingcorefunctions,
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) . PHP_EOL;

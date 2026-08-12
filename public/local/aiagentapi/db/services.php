@@ -323,9 +323,16 @@ $functions = [
     ],
 ];
 
+$coreviewfunctions = [
+    // These Moodle core functions log views and update native activity completion state.
+    'mod_page_view_page',
+    'mod_resource_view_resource',
+    'mod_quiz_view_quiz',
+];
+
 $services = [
     'local_aiagentapi' => [
-        'functions' => array_keys($functions),
+        'functions' => array_merge(array_keys($functions), $coreviewfunctions),
         'requiredcapability' => 'local/aiagentapi:use',
         'restrictedusers' => 1,
         'enabled' => 1,
